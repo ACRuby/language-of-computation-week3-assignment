@@ -111,33 +111,35 @@ Every run writes a report a librarian can read without opening the CSV or the da
 
 Every repair and every database change also goes in an audit log: import ID, row, field, old value, new value, reason, time, automatic or manual, and source file.
 
-## 5. Examples
+## 5. Examples: ISBN values and what the rules do with them
+
+24 examples, some taken from the data (the book number is given) and some made up. **Good** = a valid ISBN as written. **Repairable** = bad as written, but the rules can fix it without guessing. **Bad** = can't be used as an ISBN, or the row can't be loaded as is.
 
 Unless a row says otherwise, the value is in the `isbn` (ISBN-10) column and the rest of the row is fine.
 
-| # | ISBN value | Where it's from | What the rules say |
-|---|---|---|---|
-| 1 | `0439023483` | made up (correct form of book 1) | Valid ISBN-10. Stored as ISBN-13 `9780439023481`, with the ISBN-10 kept as an alternate. |
-| 2 | `043965548X` | book 18, *Prisoner of Azkaban* | Valid; `X` means 10. Stored as `9780439655484`. |
-| 3 | `043965548x` | made up | REPAIR lowercase `x` → `X`, then valid as in #2. |
-| 4 | `439023483` | book 1, *The Hunger Games* | REPAIR: restore 1 leading zero → `0439023483` (the check digit passes). Stored as `9780439023481`. |
-| 5 | `7442912` | book 69, *Insurgent* | REPAIR: restore 3 leading zeros → `0007442912`. Stored as `9780007442911`. |
-| 6 | `12345` | made up | Unusable: 5 characters. Too many zeros missing to restore safely. Loaded with warning if there's no other ISBN. |
-| 7 | `1847386823` | book 3473, *Dark Visions* | Unusable: check digit is wrong (should be 2). Digits are **not** changed. LOAD WITH WARNING. |
-| 8 | `385535144` | book 1543, *The Racketeer* | Unusable: still fails after restoring the zero (expected 7). LOAD WITH WARNING. |
-| 9 | `ABC123` | made up | Unusable: invalid characters. LOAD WITH WARNING. |
-| 10 | `978-0-439-02348-1` in `isbn13` | made up | REPAIR: remove hyphens → `9780439023481`, which is valid. |
-| 11 | `ISBN 978 0 439 02348 1` in `isbn13` | made up | REPAIR: remove label and spaces → `9780439023481`, which is valid. |
-| 12 | `9780439023482` in `isbn13` | made up | Unusable: check digit is wrong (should be 1). Not changed. |
-| 13 | `9770439023481` in `isbn13` | made up | Unusable: prefix 977 isn't 978/979 (977 is used for magazines). |
-| 14 | `9791032305690` in `isbn13` | made up | Valid ISBN-13 with the 979 prefix. Has no ISBN-10 form. |
-| 15 | `9.78043902348e+12` in `isbn13`, `isbn` = `439023483` | book 1 | REPAIR: ISBN-13 rebuilt from the ISBN-10 as `9780439023481`, which matches the rounded number. |
-| 16 | `9.78067978327e+12` in `isbn13`, `isbn` = `679783261` | book 10 | REPAIR: rebuilt from the ISBN-10 as `9780679783268`. Recalculating from the visible digits would have given a wrong ISBN, because the 12th digit was rounded up. |
-| 17 | `9.78043902348e+12` in `isbn13`, `isbn` empty | made up | Unusable: digits lost, nothing to check against. LOAD WITH WARNING, no ISBN. |
-| 18 | `2.94001623192e+12` in `isbn13`, `isbn` empty | book 1165, *Wait for You* | Not an ISBN (Nook ebook code). LOAD WITH WARNING, no ISBN. |
-| 19 | `97893806587.0` in `isbn13` | book 1443 | Unusable: only 11 digits. |
-| 20 | `isbn` = `446612707`, `isbn13` = `9.78055381395e+12` | book 622 | The two columns point to different publications. LOAD WITH WARNING + review; no ISBN stored. |
-| 21 | both empty | book 106, *Bossypants* | LOAD WITH WARNING: no ISBN. Identified by Goodreads ID. |
-| 22 | `439023483` again, same `goodreads_book_id`, nothing else changed | `books-batch2.csv` | UNCHANGED. No new record. |
-| 23 | `9780439023481` on a **different** `goodreads_book_id` | made up | REJECT + review: this ISBN already belongs to another book. |
-| 24 | `0439023483`, same `goodreads_book_id`, but the title has changed | made up | REJECT + review: the existing record is not overwritten. |
+| # | ISBN value | Where it's from | Good or bad? | What the rules say |
+|---|---|---|---|---|
+| 1 | `0439023483` | made up (correct form of book 1) | **Good** | Valid ISBN-10. Stored as ISBN-13 `9780439023481`, with the ISBN-10 kept as an alternate. |
+| 2 | `043965548X` | book 18, *Prisoner of Azkaban* | **Good** | Valid; `X` means 10. Stored as `9780439655484`. |
+| 3 | `043965548x` | made up | Repairable | REPAIR lowercase `x` → `X`, then valid as in #2. |
+| 4 | `439023483` | book 1, *The Hunger Games* | Repairable | REPAIR: restore 1 leading zero → `0439023483` (the check digit passes). Stored as `9780439023481`. |
+| 5 | `7442912` | book 69, *Insurgent* | Repairable | REPAIR: restore 3 leading zeros → `0007442912`. Stored as `9780007442911`. |
+| 6 | `12345` | made up | **Bad** | Unusable: 5 characters. Too many zeros missing to restore safely. Loaded with warning if there's no other ISBN. |
+| 7 | `1847386823` | book 3473, *Dark Visions* | **Bad** | Unusable: check digit is wrong (should be 2). Digits are **not** changed. LOAD WITH WARNING. |
+| 8 | `385535144` | book 1543, *The Racketeer* | **Bad** | Unusable: still fails after restoring the zero (expected 7). LOAD WITH WARNING. |
+| 9 | `ABC123` | made up | **Bad** | Unusable: invalid characters. LOAD WITH WARNING. |
+| 10 | `978-0-439-02348-1` in `isbn13` | made up | Repairable | REPAIR: remove hyphens → `9780439023481`, which is valid. |
+| 11 | `ISBN 978 0 439 02348 1` in `isbn13` | made up | Repairable | REPAIR: remove label and spaces → `9780439023481`, which is valid. |
+| 12 | `9780439023482` in `isbn13` | made up | **Bad** | Unusable: check digit is wrong (should be 1). Not changed. |
+| 13 | `9770439023481` in `isbn13` | made up | **Bad** | Unusable: prefix 977 isn't 978/979 (977 is used for magazines). |
+| 14 | `9791032305690` in `isbn13` | made up | **Good** | Valid ISBN-13 with the 979 prefix. Has no ISBN-10 form. |
+| 15 | `9.78043902348e+12` in `isbn13`, `isbn` = `439023483` | book 1 | Repairable | REPAIR: ISBN-13 rebuilt from the ISBN-10 as `9780439023481`, which matches the rounded number. |
+| 16 | `9.78067978327e+12` in `isbn13`, `isbn` = `679783261` | book 10 | Repairable | REPAIR: rebuilt from the ISBN-10 as `9780679783268`. Recalculating from the visible digits would have given a wrong ISBN, because the 12th digit was rounded up. |
+| 17 | `9.78043902348e+12` in `isbn13`, `isbn` empty | made up | **Bad** | Unusable: digits lost, nothing to check against. LOAD WITH WARNING, no ISBN. |
+| 18 | `2.94001623192e+12` in `isbn13`, `isbn` empty | book 1165, *Wait for You* | **Bad** | Not an ISBN (Nook ebook code). LOAD WITH WARNING, no ISBN. |
+| 19 | `97893806587.0` in `isbn13` | book 1443 | **Bad** | Unusable: only 11 digits. |
+| 20 | `isbn` = `446612707`, `isbn13` = `9.78055381395e+12` | book 622 | **Bad** | The two columns point to different publications. LOAD WITH WARNING + review; no ISBN stored. |
+| 21 | both empty | book 106, *Bossypants* | **Bad** | LOAD WITH WARNING: no ISBN. Identified by Goodreads ID. |
+| 22 | `439023483` again, same `goodreads_book_id`, nothing else changed | `books-batch2.csv` | Repairable | UNCHANGED. No new record. |
+| 23 | `9780439023481` on a **different** `goodreads_book_id` | made up | **Bad** | REJECT + review: this ISBN already belongs to another book. |
+| 24 | `0439023483`, same `goodreads_book_id`, but the title has changed | made up | **Bad** | REJECT + review: the existing record is not overwritten. |
