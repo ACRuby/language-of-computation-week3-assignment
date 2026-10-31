@@ -1,7 +1,9 @@
 """Row rules, duplicate/update logic, reports and idempotency (requirement
 tests 11-30, plus the real goodbooks-10k files).
 Run: py -3.13 -m unittest discover tests"""
+import contextlib
 import csv
+import io
 import shutil
 import sqlite3
 import sys
@@ -289,7 +291,9 @@ class Reporting(ImportTestCase):
         self.assertIn("Nothing from this file was saved", s.report_paths["report"].read_text(encoding="utf-8"))
 
     def test_failed_exit_code(self):
-        self.assertEqual(import_books.main([str(self.dir / "nope.csv"), "--db", str(self.db), "--reports", str(self.dir / "r")]), 2)
+        with contextlib.redirect_stdout(io.StringIO()):     # keep the expected "FAILED" message out of test output
+            code = import_books.main([str(self.dir / "nope.csv"), "--db", str(self.db), "--reports", str(self.dir / "r")])
+        self.assertEqual(code, 2)
 
     def test_30_audit_log_records_repairs_and_creation(self):
         s = self.run_rows([book()])

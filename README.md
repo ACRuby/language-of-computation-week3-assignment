@@ -2,59 +2,235 @@
 
 This is my Module 3 assignment for MSAI-5523.
 
-A nightly import that checks every row of a books CSV (goodbooks-10k format), loads the good rows into SQLite, never loads the same book twice, and writes a report a person can read the next morning.
+## What this project does
 
-| File | What it is |
-|---|---|
-| [data-validation.md](data-validation.md) | Diagnosis of the ISBN problems in `books.csv` and `books-batch2.csv` |
-| [rules.md](rules.md) | The rules the code must follow: repair, reject or warn; duplicates; existing records; the report; examples |
-| [implementation.md](implementation.md) | How the code follows the rules, the tests, and known limitations |
-| `ingest.py` | Loads a books CSV into `books.db` and appends one entry per run to `ingestion-log.json` |
-| `report.html` | Opens `ingestion-log.json` in a browser (no server) and shows each run, newest first |
-| `make_report.py` → `ingestion-report.xlsx` | Builds an Excel workbook from `ingestion-log.json`: tabs for runs, rows not loaded, and warnings |
-| `isbn.py`, `validate.py` | The ISBN and row rules, shared by `ingest.py` and `import_books.py` |
-| `import_books.py`, `report.py` | The earlier version of the import (`library.db` + Markdown/CSV reports) |
-| `tests/` | Automated tests |
-| `examples/` | Real reports produced by the code |
-| `books.csv` | Source data: [goodbooks-10k](https://github.com/zygmuntz/goodbooks-10k) `books.csv`, unchanged |
-| `books-batch2.csv` | 200 rows picked at random from `books.csv` (seed 5523), copied byte-for-byte |
+Every night a new file of books arrives, and many of its ISBN numbers are broken. This project's program reads the file and checks every book on it. It fixes only what can be fixed without guessing, saves the good books into a small database, never saves the same book twice, and writes down what happened so a person can check it the next morning.
 
-## Run it
+You can read what happened in two ways:
+- **a web page** (`report.html`) that opens in your browser;
+- **an Excel file** (`ingestion-report.xlsx`).
+
+---
+
+## How to run it, step by step
+
+You don't need any programming knowledge. You'll copy a line, paste it into a window, and press **Enter**. Do the steps in order.
+
+### Step 1: Open PowerShell
+
+PowerShell is a window where you type commands for your computer.
+
+1. Press the **Windows key** on your keyboard (the key with the Windows logo).
+2. Type **PowerShell**.
+3. Click **Windows PowerShell** in the list.
+
+A window opens with some text, and a line that ends with `>`. For example:
+
+```
+PS C:\Users\abiga>
+```
+
+That line is where you type. It's called the **prompt**.
+
+### Step 2: Go to the project folder
+
+The program only works if PowerShell is "standing in" the project folder.
+
+1. Copy this line (select it, then press **Ctrl + C**):
+
+   ```bash
+   cd ~\workspace\language-of-computation\week3-assignment
+   ```
+
+2. Click inside the PowerShell window.
+3. Paste it by pressing **Ctrl + V** (or right-click).
+4. Press **Enter**.
+
+**Check:** the prompt should now end with `week3-assignment>`, like this:
+
+```
+PS C:\Users\abiga\workspace\language-of-computation\week3-assignment>
+```
+
+If it does, you're in the right place. If you close PowerShell later, do Step 2 again when you reopen it.
+
+### Step 3: Check that Python works
+
+Python is the program that runs this project's code. It's already installed on this computer.
+
+Copy, paste and press **Enter**:
+
+```bash
+py -3.13 --version
+```
+
+**You should see:**
+
+```
+Python 3.13.16
+```
+
+(The last number may differ. Anything starting with `Python 3.13` is fine.)
+
+> Always type `py -3.13`, never `python3`. On Windows, `python3` opens the Microsoft Store instead of running Python.
+
+### Step 4: Load the books
+
+This reads `books.csv` (the list of 10,000 books), checks every row, and saves the books into the database file `books.db`.
+
+Copy, paste and press **Enter**:
 
 ```bash
 py -3.13 ingest.py books.csv
 ```
 
+It takes a few seconds. **You should see something like:**
+
+```
+COMPLETED WITH ISSUES: read 10000, loaded 0, updated 0, skipped (already exist) 10000, rejected 0 | repaired 9998, with warnings 753
+Run 20261031T150212-a1b2c3 added to ingestion-log.json. Open report.html to read it.
+```
+
+What the words mean:
+
+| Word | Meaning |
+|---|---|
+| **COMPLETED WITH ISSUES** | It finished. Some books need a person to look at them (see Step 6). |
+| **read** | How many books were in the file. |
+| **loaded** | New books saved for the first time. |
+| **updated** | Books already saved, but something like their rating changed. |
+| **skipped (already exist)** | Books already saved and unchanged, so nothing was done. This is how duplicates are prevented. |
+| **rejected** | Books that couldn't be saved, for example because the title is missing. |
+| **repaired** | Books where something was fixed safely, such as a missing zero at the start of an ISBN. |
+| **with warnings** | Books saved, but with something a person should check, such as no usable ISBN. |
+
+**Why "loaded 0"?** The database that comes with this project already holds all 10,000 books, so they're all **skipped**. That's correct: loading the same file again must never create duplicates. (On an empty database you'd see `loaded 10000`.)
+
+Every time you do this step, one new entry is added to the log file `ingestion-log.json`. Earlier entries are never erased.
+
+### Step 5: Load the second file
+
+`books-batch2.csv` is a second file of 200 books. All of them are already in `books.csv`, so this shows that duplicates are skipped.
+
+Copy, paste and press **Enter**:
+
 ```bash
 py -3.13 ingest.py books-batch2.csv
 ```
 
-Then open `report.html` in a browser, click **Open ingestion-log.json**, and pick the log file.
+**You should see** `read 200, loaded 0, ... skipped (already exist) 200, rejected 0`.
 
-For an Excel version of the same information, run this and open `ingestion-report.xlsx`:
+### Step 6: See the results in your web browser
+
+1. Open **File Explorer** (the yellow folder icon on your taskbar).
+2. Click the **address bar** at the top of the window, paste this, and press **Enter**:
+
+   ```
+   C:\Users\abiga\workspace\language-of-computation\week3-assignment
+   ```
+
+3. Double-click **report.html**. It opens in your web browser.
+4. Click the blue button **Open ingestion-log.json**.
+5. In the window that appears, click **ingestion-log.json**, then click **Open**.
+
+You'll see one box for each time the program ran, **newest at the top**. Each box shows:
+- a coloured label: **green** = everything fine, **yellow** = finished but something needs checking, **red** = it failed and nothing was saved;
+- the numbers from Step 4;
+- **Actions required**: what a person should do next;
+- **Rows not loaded**: every rejected book, why, and what to do about it;
+- **Rows loaded with warnings**: click this line to open the list.
+
+Nothing is sent to the internet. The page just reads the file on your computer.
+
+### Step 7: Make the Excel report
+
+Go back to the PowerShell window. Copy, paste and press **Enter**:
 
 ```bash
 py -3.13 make_report.py
 ```
 
-It has three tabs, each with a frozen, filterable header row:
+**You should see something like:**
 
-- **Runs:** one row per run, newest first, with the status coloured green, yellow or red.
-- **Rows not loaded:** every rejected row, with why and what to do.
-- **Warnings:** every row that was loaded with a warning.
-
-Run it again after each import to bring the workbook up to date.
-
-Each run reads every row, loads new books, updates changed ones, skips books that already exist, and rejects rows the rules don't allow. Running the same file twice never creates duplicates. Every run, even a failed one, is appended to `ingestion-log.json`: when it ran, which file, how many rows were read, loaded, updated, skipped and rejected, and every row that wasn't loaded with its reason and what to do. If the log file is damaged, the script stops without importing anything or changing the log.
-
-To re-import corrected rows that an earlier run rejected:
-
-```bash
-py -3.13 ingest.py fixed-rows.csv --reprocess-of RUN_ID
+```
+Wrote ingestion-report.xlsx: Runs: 6 row(s), Rows not loaded: 3 row(s), Warnings: 2,381 row(s)
 ```
 
-Run the tests:
+Then, in the File Explorer window from Step 6, double-click **ingestion-report.xlsx** to open it in Excel.
+
+It has three tabs at the bottom:
+
+| Tab | What's on it |
+|---|---|
+| **Runs** | One line per run, newest first, with its numbers. The status is coloured green, yellow or red. |
+| **Rows not loaded** | Every book that was rejected, why, and what to do. |
+| **Warnings** | Every book that was saved but needs checking. |
+
+You can sort or filter any column with the small arrow in its heading.
+
+The Excel file is a snapshot. After you load a file again (Step 4 or 5), repeat this step to update it.
+
+### Step 8 (optional): Run the automatic checks
+
+The project comes with 83 automatic tests that check the program follows the rules. Copy, paste and press **Enter**:
 
 ```bash
-py -3.13 -m unittest discover tests -v
+py -3.13 -m unittest discover tests
 ```
+
+It takes about 10 seconds. First you'll see a row of dots: each dot is a test that passed, and each `s` is a skipped test. At the end **you should see:**
+
+```
+----------------------------------------------------------------------
+Ran 83 tests in 7.388s
+
+OK (skipped=2)
+```
+
+`OK` means every test passed. The 2 skipped tests are for things this data doesn't have (publishers and library inventory). The time will be different.
+
+---
+
+## If something goes wrong
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `can't open file ... No such file or directory` | PowerShell isn't in the project folder. | Do Step 2 again, then try again. |
+| `Python was not found; run without arguments to install from the Microsoft Store` | You typed `python3` or `python`. | Type `py -3.13` instead, exactly as shown. |
+| `'py' is not recognized` or a message that Python 3.13 can't be found | Python 3.13 isn't installed on this computer. | Install Python 3.13 from python.org, close PowerShell, then start again at Step 1. |
+| `PermissionError` when making the Excel report | The Excel file is still open in Excel. | Close it in Excel, then run Step 7 again. |
+| `ERROR: ingestion-log.json is not valid JSON` | The log file was damaged, for example by editing it by hand. Nothing was loaded. | Get the original back from GitHub with `git checkout -- ingestion-log.json`, then try again. |
+| The web page shows only a button | That's normal: the page waits for you to choose the log file. | Do Step 6, parts 4 and 5. |
+| The status is **FAILED** (red) | The program stopped and saved nothing, so the database is unchanged. | Read the **Error** line in that run's box, fix what it says, and run the step again. |
+
+---
+
+## Fixing rejected books (advanced)
+
+If a run rejects some books, you can fix them in a copy of the file, for example `fixed-rows.csv`, and load just that file. Add the run ID of the run that rejected them, so the fix is linked to it. The run ID is shown in the report, for example `20261031T143449-0c8457`.
+
+```bash
+py -3.13 ingest.py fixed-rows.csv --reprocess-of 20261031T143449-0c8457
+```
+
+---
+
+## What's in this folder
+
+| File | What it is |
+|---|---|
+| [data-validation.md](data-validation.md) | What's wrong with the ISBNs in the book files, and how often |
+| [rules.md](rules.md) | The rules the program must follow: what to fix, reject or flag, how duplicates are found, and what the report must say |
+| [implementation.md](implementation.md) | How the program follows the rules, the tests, and what it can't do |
+| `ingest.py` | **The main program:** loads a book file into `books.db` and adds an entry to `ingestion-log.json` |
+| `report.html` | The web page that shows `ingestion-log.json` |
+| `make_report.py` | Makes the Excel file `ingestion-report.xlsx` from `ingestion-log.json` |
+| `books.db` | The database of saved books |
+| `ingestion-log.json` | The record of every run |
+| `ingestion-report.xlsx` | The Excel report |
+| `books.csv` | The 10,000 books, from [goodbooks-10k](https://github.com/zygmuntz/goodbooks-10k), unchanged |
+| `books-batch2.csv` | 200 books picked at random from `books.csv` |
+| `isbn.py`, `validate.py` | Helper code with the ISBN and row rules, used by `ingest.py` |
+| `import_books.py`, `report.py` | An earlier version of the program (makes `library.db` and reports in `reports/`) |
+| `tests/` | The automatic tests from Step 8 |
+| `examples/` | Example reports from the earlier version |

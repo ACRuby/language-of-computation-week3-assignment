@@ -1,7 +1,9 @@
 """ingest.py: counts, duplicates, the append-only log, failures and reprocessing.
 The row rules themselves are tested in test_isbn.py / test_import.py (shared validate.py).
 Run: py -3.13 -m unittest discover tests"""
+import contextlib
 import csv
+import io
 import json
 import shutil
 import sqlite3
@@ -142,8 +144,9 @@ class Log(IngestTestCase):
         self.assertEqual(strip(a), strip(b))
 
     def test_command_line_exit_codes(self):
-        ok = ingest.main([str(self.write([book()])), "--db", str(self.db), "--log", str(self.log)])
-        failed = ingest.main([str(self.dir / "nope.csv"), "--db", str(self.db), "--log", str(self.log)])
+        with contextlib.redirect_stdout(io.StringIO()):     # keep the expected "FAILED" message out of test output
+            ok = ingest.main([str(self.write([book()])), "--db", str(self.db), "--log", str(self.log)])
+            failed = ingest.main([str(self.dir / "nope.csv"), "--db", str(self.db), "--log", str(self.log)])
         self.assertEqual((ok, failed), (0, 2))
 
 

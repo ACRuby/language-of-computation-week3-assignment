@@ -1,5 +1,7 @@
 """make_report.py: the Excel workbook built from ingestion-log.json.
 Run: py -3.13 -m unittest discover tests"""
+import contextlib
+import io
 import json
 import re
 import shutil
@@ -115,7 +117,9 @@ class Workbook(unittest.TestCase):
     def test_command_line(self):
         log = self.dir / "log.json"
         log.write_text(json.dumps([run("a", "2026-10-31T02:00:00")]), encoding="utf-8")
-        self.assertEqual(make_report.main(["--log", str(log), "--out", str(self.out)]), 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = make_report.main(["--log", str(log), "--out", str(self.out)])
+        self.assertEqual(code, 0)
         self.assertTrue(self.out.exists())
 
 
