@@ -11,6 +11,7 @@ A nightly import that checks every row of a books CSV (goodbooks-10k format), lo
 | [implementation.md](implementation.md) | How the code follows the rules, the tests, and known limitations |
 | `ingest.py` | Loads a books CSV into `books.db` and appends one entry per run to `ingestion-log.json` |
 | `report.html` | Opens `ingestion-log.json` in a browser (no server) and shows each run, newest first |
+| `make_report.py` → `ingestion-report.xlsx` | Builds an Excel workbook from `ingestion-log.json`: tabs for runs, rows not loaded, and warnings |
 | `isbn.py`, `validate.py` | The ISBN and row rules, shared by `ingest.py` and `import_books.py` |
 | `import_books.py`, `report.py` | The earlier version of the import (`library.db` + Markdown/CSV reports) |
 | `tests/` | Automated tests |
@@ -29,6 +30,20 @@ py -3.13 ingest.py books-batch2.csv
 ```
 
 Then open `report.html` in a browser, click **Open ingestion-log.json**, and pick the log file.
+
+For an Excel version of the same information, run this and open `ingestion-report.xlsx`:
+
+```bash
+py -3.13 make_report.py
+```
+
+It has three tabs, each with a frozen, filterable header row:
+
+- **Runs:** one row per run, newest first, with the status coloured green, yellow or red.
+- **Rows not loaded:** every rejected row, with why and what to do.
+- **Warnings:** every row that was loaded with a warning.
+
+Run it again after each import to bring the workbook up to date.
 
 Each run reads every row, loads new books, updates changed ones, skips books that already exist, and rejects rows the rules don't allow. Running the same file twice never creates duplicates. Every run, even a failed one, is appended to `ingestion-log.json`: when it ran, which file, how many rows were read, loaded, updated, skipped and rejected, and every row that wasn't loaded with its reason and what to do. If the log file is damaged, the script stops without importing anything or changing the log.
 

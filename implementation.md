@@ -305,3 +305,30 @@ The questions that `rules.md` left open were answered as follows before any code
 - there is no sideways scrolling.
 
 **Limitation:** the log grows with every run, since each entry lists every warning (about 500 KB for a full `books.csv` run).
+
+## make_report.py and ingestion-report.xlsx
+
+Choices made for this addition:
+- **Format:** a real Excel `.xlsx`.
+- **Separate script:** `ingest.py` is unchanged.
+- **Scope:** all runs, in three tabs.
+
+`make_report.py` reads `ingestion-log.json` and writes `ingestion-report.xlsx`. The tabs are:
+
+| Tab | Rows | Columns |
+|---|---|---|
+| Runs | One per run, newest first | Started, file, status (green SUCCESS / yellow COMPLETED WITH ISSUES / red FAILED), rows read, loaded, updated, skipped, rejected, repaired, rows with warnings, counts add up, error, actions required, already imported as, re-processes run, finished, run ID |
+| Rows not loaded | Every rejected row of every run | Run started, file, row, Goodreads ID, title, original isbn/isbn13, field, problem, detail, action, why, what to do, run ID |
+| Warnings | Every warning of every run | Same columns as Rows not loaded |
+
+How it's built:
+- **Easy to read in Excel:**
+  - each tab has a bold header row that stays frozen when scrolling, with a filter on every column;
+  - columns have set widths, and long text wraps;
+  - counts are real numbers, with thousands separators.
+- **No install needed:** Python's standard library writes the workbook directly. An `.xlsx` file is a zip of XML files.
+- **Repeatable:** the same log always produces a byte-identical file.
+- **Checked:** it was opened with an independent Excel reader (openpyxl, under Python 3.9), which found the right tabs, frozen header, filters, colours and numbers.
+- **Tests:** `tests/test_make_report.py`, 9 tests.
+
+**Limitation:** the workbook is a snapshot. Run `make_report.py` again after each import. Each tab holds about a million rows (Excel's limit); past that, the script stops with an error instead of writing a partial file.
