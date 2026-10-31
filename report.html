@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Ingestion Report</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5d6676; --border: #dfe3ea;
+    --accent: #2f5bd3; --ok-bg: #e5f5ea; --ok: #1d6b39; --warn-bg: #fff3d6; --warn: #8a5a00;
+    --bad-bg: #fde7e7; --bad: #a32020; --row: #f2f4f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --card: #1d2129; --text: #e6e9ef; --muted: #a0a8b6; --border: #333a46;
+      --accent: #7ea2ff; --ok-bg: #173523; --ok: #7fd69d; --warn-bg: #3a2e12; --warn: #f2c35b;
+      --bad-bg: #3d1a1a; --bad: #ff9a9a; --row: #232833;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 20px; }
+  .open { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); color: #fff;
+          border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  .open:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  #file { display: none; }
+  #status { margin: 14px 0 22px; color: var(--muted); }
+  #status.error { color: var(--bad); font-weight: 600; }
+  .run { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+         padding: 18px 20px; margin-bottom: 18px; }
+  .run-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
+  .run-head h2 { font-size: 1.15rem; margin: 0; word-break: break-all; }
+  .meta { color: var(--muted); font-size: .9rem; margin: 4px 0 14px; }
+  .pill { font-size: .8rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+  .SUCCESS { background: var(--ok-bg); color: var(--ok); }
+  .WITH_ISSUES { background: var(--warn-bg); color: var(--warn); }
+  .FAILED { background: var(--bad-bg); color: var(--bad); }
+  .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .count { background: var(--row); border-radius: 8px; padding: 8px 10px; }
+  .count b { display: block; font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+  .count span { color: var(--muted); font-size: .82rem; }
+  .note { margin: 6px 0; font-size: .92rem; }
+  .note.bad { color: var(--bad); font-weight: 600; }
+  h3 { font-size: 1rem; margin: 16px 0 6px; }
+  ul.actions { margin: 4px 0; padding-left: 20px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: .86rem; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { background: var(--row); position: sticky; top: 0; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  code { font-size: .85em; }
+  details summary { cursor: pointer; font-weight: 600; margin: 16px 0 6px; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Book Ingestion Report</h1>
+  <p class="lead">Shows every run recorded in <code>ingestion-log.json</code>, newest first. The file is read in your browser only; nothing is uploaded.</p>
+  <label class="open" for="file" tabindex="0" role="button">Open ingestion-log.json</label>
+  <input type="file" id="file" accept=".json,application/json">
+  <p id="status">No log opened yet.</p>
+  <div id="runs"></div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var COUNT_LABELS = [
+    ["read", "Rows read"], ["loaded", "Loaded (new)"], ["updated", "Updated"],
+    ["skipped_existing", "Skipped: already exist"], ["rejected", "Rejected"],
+    ["repaired", "Repaired"], ["rows_with_warnings", "With warnings"]
+  ];
+  var ROW_COLUMNS = [
+    ["row_number", "Row"], ["goodreads_book_id", "Goodreads ID"], ["title", "Title"],
+    ["original_isbn", "isbn"], ["original_isbn13", "isbn13"], ["field", "Field"],
+    ["problem", "Problem"], ["detail", "Detail"], ["action", "Action"], ["why", "Why"],
+    ["what_to_do", "What to do"]
+  ];
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k]; else node.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) node.appendChild(c); });
+    return node;
+  }
+  function show(value) { return value === null || value === undefined || String(value).trim() === "" ? "—" : String(value); }
+  function when(iso) { return iso ? iso.replace("T", " ") : "—"; }
+
+  function rowsTable(rows) {
+    var head = el("tr", {}, ROW_COLUMNS.map(function (c) { return el("th", { text: c[1] }); }));
+    var body = rows.map(function (r) {
+      return el("tr", {}, ROW_COLUMNS.map(function (c) {
+        return el("td", { text: show(r[c[0]]), "class": c[0] === "row_number" ? "num" : "" });
+      }));
+    });
+    return el("div", { "class": "table-wrap" }, [el("table", {}, [el("thead", {}, [head]), el("tbody", {}, body)])]);
+  }
+
+  function renderRun(run) {
+    var status = run.status || "UNKNOWN";
+    var cls = status === "SUCCESS" ? "SUCCESS" : status === "FAILED" ? "FAILED" : "WITH_ISSUES";
+    var counts = run.counts || {};
+    var card = el("section", { "class": "run" });
+
+    card.appendChild(el("div", { "class": "run-head" }, [
+      el("h2", { text: show(run.file) }),
+      el("span", { "class": "pill " + cls, text: status })
+    ]));
+    card.appendChild(el("div", { "class": "meta", text:
+      "Run " + show(run.run_id) + " · started " + when(run.started_at) + " · finished " + when(run.finished_at) }));
+
+    card.appendChild(el("div", { "class": "counts" }, COUNT_LABELS.map(function (c) {
+      var n = counts[c[0]];
+      return el("div", { "class": "count" }, [
+        el("b", { text: typeof n === "number" ? n.toLocaleString() : "—" }),
+        el("span", { text: c[1] })
+      ]);
+    })));
+
+    if (run.error) card.appendChild(el("p", { "class": "note bad", text: "Error: " + run.error + ". Nothing from this run was saved." }));
+    if (run.counts_add_up === true) {
+      card.appendChild(el("p", { "class": "note", text: "Check: " + counts.read + " read = " + counts.loaded + " loaded + " +
+        counts.updated + " updated + " + counts.skipped_existing + " skipped + " + counts.rejected + " rejected. Adds up." }));
+    } else if (run.counts_add_up === false) {
+      card.appendChild(el("p", { "class": "note bad", text: "Counts do not add up for this run." }));
+    }
+    if (run.already_imported_as) card.appendChild(el("p", { "class": "note", text:
+      "This exact file was already imported as run " + run.already_imported_as + "." }));
+    if (run.reprocess_of) card.appendChild(el("p", { "class": "note", text:
+      "Re-processes corrected rows rejected by run " + run.reprocess_of + "." }));
+
+    var actions = run.actions_required || [];
+    card.appendChild(el("h3", { text: "Actions required" }));
+    card.appendChild(actions.length
+      ? el("ul", { "class": "actions" }, actions.map(function (a) { return el("li", { text: a }); }))
+      : el("p", { "class": "muted", text: "None." }));
+
+    var notLoaded = run.not_loaded || [];
+    card.appendChild(el("h3", { text: "Rows not loaded (" + notLoaded.length.toLocaleString() + ")" }));
+    card.appendChild(notLoaded.length ? rowsTable(notLoaded) : el("p", { "class": "muted", text: status === "FAILED"
+      ? "The run failed, so no rows were loaded (see the error above)."
+      : "Every row was loaded or already existed." }));
+
+    var warnings = run.warnings || [];
+    if (warnings.length) {
+      var details = el("details", {}, [el("summary", { text: "Rows loaded with warnings (" + warnings.length.toLocaleString() + ")" })]);
+      details.addEventListener("toggle", function () {      // built on first open: logs can hold thousands of rows
+        if (details.open && !details.dataset.built) { details.appendChild(rowsTable(warnings)); details.dataset.built = "1"; }
+      });
+      card.appendChild(details);
+    }
+    return card;
+  }
+
+  function render(runs, fileName) {
+    var container = document.getElementById("runs");
+    var statusLine = document.getElementById("status");
+    container.textContent = "";
+    // Newest first; runs started in the same second keep their log order (later entry = newer).
+    var ordered = runs.map(function (run, i) { return { run: run, i: i }; }).sort(function (a, b) {
+      return String(b.run.started_at || "").localeCompare(String(a.run.started_at || "")) || b.i - a.i;
+    }).map(function (x) { return x.run; });
+    statusLine.className = "";
+    statusLine.textContent = fileName + ": " + runs.length + " run" + (runs.length === 1 ? "" : "s") + ", newest first.";
+    ordered.forEach(function (run) { container.appendChild(renderRun(run)); });
+  }
+
+  function fail(message) {
+    var statusLine = document.getElementById("status");
+    statusLine.className = "error";
+    statusLine.textContent = message;
+    document.getElementById("runs").textContent = "";
+  }
+
+  document.getElementById("file").addEventListener("change", function (event) {
+    var file = event.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var data;
+      try { data = JSON.parse(reader.result); } catch (e) { return fail(file.name + " is not valid JSON: " + e.message); }
+      if (!Array.isArray(data)) return fail(file.name + " should contain a list of runs.");
+      render(data, file.name);
+    };
+    reader.onerror = function () { fail("Could not read " + file.name + "."); };
+    reader.readAsText(file);
+    event.target.value = "";   // allow re-opening the same file after a new run
+  });
+  document.querySelector(".open").addEventListener("keydown", function (event) {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); document.getElementById("file").click(); }
+  });
+})();
+</script>
+</body>
+</html>

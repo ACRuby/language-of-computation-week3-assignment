@@ -248,3 +248,60 @@ There's no review screen. Review items live in the `review_items` table and appe
 - **Rejected again every night.** A conflicting row is rejected (and reported) on every run until someone resolves it. That's intended, but it repeats.
 - **Repairs in every report.** Every run repeats the same repairs on unchanged rows, so the audit log grows by about 26,500 entries for each full re-import of `books.csv` (the first import writes about 36,500, including one "created" entry per book).
 - **One file at a time.** Two imports must not run at once; SQLite's lock makes the second one fail rather than corrupt anything.
+
+---
+
+## ingest.py, ingestion-log.json and report.html
+
+`ingest.py` is the version of the import built for the Part 4 step. It uses the same row rules as `import_books.py` (it imports `isbn.py` and `validate.py`), but writes to `books.db` and records each run in `ingestion-log.json` instead of Markdown/CSV reports. `report.html` reads that log in the browser.
+
+The questions that `rules.md` left open were answered as follows before any code was written:
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | New script or reuse? | Reuse `isbn.py` and `validate.py`; `import_books.py` left as it is |
+| 2 | Which outputs? | `books.db`, `ingestion-log.json`, and `report.html` only (no Markdown/CSV reports) |
+| 3 | Audit log and review items | Tables in `books.db` (`audit_log`, `review_items`, plus `runs` and `rejected_rows`) |
+| 4 | What goes in each log entry | Everything `rules.md` section 4 asks for: status, run ID, start/end time, counts, problem counts, actions required |
+| 5 | Count names | loaded = CREATED, updated = UPDATED, skipped (already exist) = UNCHANGED, rejected = REJECTED |
+| 6 | "Rows not loaded" | Only rejected rows; rows loaded with a warning are listed separately under `warnings` |
+| 7 | Fields per listed row | Row number, Goodreads ID, title, original ISBNs, field, problem, detail, action, why, what to do |
+| 8 | FAILED runs | Logged too |
+| 9 | Damaged log file | Stop with an error before importing; the log is not touched |
+| 10 | Required columns | `goodreads_book_id`, `title`, `authors`, `original_publication_year`, `isbn`, `isbn13` |
+| 11 | Valid ISBN-10 + non-matching scientific ISBN-13 | Conflict: warning + review, no ISBN stored |
+| 12 | Whitespace | Collapse in `title`, `authors`, `original_title`; trim the ends of every other value |
+| 13 | `original_title` changes | Reject and review (filling a blank one is an update) |
+| 14 | Invalid `goodreads_book_id` | Anything but a positive whole number (`123.0`, `-5`, `0`, blank) is rejected |
+| 15 | Future year | Kept, compared with the run date |
+| 16 | Possible duplicates | Same title and author, ignoring capitals and extra spaces |
+| 17 | "Already imported" | Same file contents (SHA-256), not the same name |
+| 18 | Linking corrected rows | `--reprocess-of RUN_ID`; an unknown run ID makes the run FAILED |
+
+**Log file:** a JSON list, one object per run. It's written by saving the whole list to a temporary file and renaming it over the old one, so earlier runs are never lost, even if the script crashes mid-write.
+
+**Deterministic:** no AI, no network, no randomness in results. Only the run ID, timestamps and the future-year check depend on when the script runs. `test_same_file_gives_same_result` checks this.
+
+**Tests:** `tests/test_ingest.py`, 16 tests. They cover:
+- count mapping, and that the counts add up;
+- rejected-row details;
+- SUCCESS status;
+- running the same file twice;
+- possible-duplicate matching;
+- decisions 11, 13 and 14;
+- the log being created and appended;
+- a FAILED run being logged;
+- a damaged log being left untouched;
+- identical results for identical input;
+- exit codes;
+- `--reprocess-of`, including an unknown run ID;
+- the real data, where `books.csv` then `books-batch2.csv` gives 10,000 loaded, then 0 loaded and 200 skipped.
+
+**report.html:** verified in a browser:
+- runs show newest first, including runs started in the same second;
+- FAILED, COMPLETED WITH ISSUES and SUCCESS runs all display;
+- text from the CSV is shown as text, not run as HTML;
+- the real three-run log (514 KB, 779 warning rows) renders in about 1 second;
+- there is no sideways scrolling.
+
+**Limitation:** the log grows with every run, since each entry lists every warning (about 500 KB for a full `books.csv` run).
