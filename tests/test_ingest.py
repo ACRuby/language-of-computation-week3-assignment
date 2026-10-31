@@ -26,6 +26,7 @@ class IngestTestCase(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.db, self.log = self.dir / "books.db", self.dir / "ingestion-log.json"
+        self.corrections = self.dir / "isbn-corrections.csv"     # never the real one in the project folder
         self.n = 0
 
     def tearDown(self):
@@ -41,6 +42,7 @@ class IngestTestCase(unittest.TestCase):
         return path
 
     def run_file(self, path, **kw):
+        kw.setdefault("corrections_path", self.corrections)
         return ingest.ingest(path, self.db, self.log, now=lambda: NOW, **kw)
 
     def log_entries(self):
@@ -65,7 +67,7 @@ class Counts(IngestTestCase):
             book(goodreads_book_id="71", isbn="", isbn13="", title="No ISBN"),   # loaded with warning
         ]))
         self.assertEqual(e["counts"], {"read": 5, "loaded": 2, "updated": 1, "skipped_existing": 1, "rejected": 1,
-                                       "repaired": 4, "rows_with_warnings": 1})
+                                       "repaired": 4, "rows_with_warnings": 1, "corrected": 0, "accepted_without_isbn": 0})
         self.assertTrue(e["counts_add_up"])
         self.assertEqual(e["status"], "COMPLETED WITH ISSUES")
 
@@ -138,15 +140,16 @@ class Log(IngestTestCase):
     def test_same_file_gives_same_result(self):
         path = self.write([book(), book(title=""), book(isbn="1847386823", **{k: v for k, v in OTHER.items() if k != "isbn"})])
         other_db = self.dir / "other.db"
-        a = ingest.ingest(path, self.db, self.log, now=lambda: NOW)
-        b = ingest.ingest(path, other_db, self.dir / "other-log.json", now=lambda: NOW)
+        a = ingest.ingest(path, self.db, self.log, now=lambda: NOW, corrections_path=self.corrections)
+        b = ingest.ingest(path, other_db, self.dir / "other-log.json", now=lambda: NOW, corrections_path=self.corrections)
         strip = lambda e: {k: v for k, v in e.items() if k not in ("run_id",)}   # noqa: E731
         self.assertEqual(strip(a), strip(b))
 
     def test_command_line_exit_codes(self):
         with contextlib.redirect_stdout(io.StringIO()):     # keep the expected "FAILED" message out of test output
-            ok = ingest.main([str(self.write([book()])), "--db", str(self.db), "--log", str(self.log)])
-            failed = ingest.main([str(self.dir / "nope.csv"), "--db", str(self.db), "--log", str(self.log)])
+            args = ["--db", str(self.db), "--log", str(self.log), "--corrections", str(self.corrections)]
+            ok = ingest.main([str(self.write([book()]))] + args)
+            failed = ingest.main([str(self.dir / "nope.csv")] + args)
         self.assertEqual((ok, failed), (0, 2))
 
 
@@ -169,9 +172,9 @@ class Reprocess(IngestTestCase):
 @unittest.skipUnless((ROOT / "books.csv").exists() and (ROOT / "books-batch2.csv").exists(), "data files not present")
 class RealData(IngestTestCase):
     def test_books_then_batch2(self):
-        first = ingest.ingest(ROOT / "books.csv", self.db, self.log, now=lambda: NOW)
+        first = ingest.ingest(ROOT / "books.csv", self.db, self.log, now=lambda: NOW, corrections_path=self.corrections)
         self.assertEqual((first["counts"]["read"], first["counts"]["loaded"], first["counts"]["rejected"]), (10000, 10000, 0))
-        batch2 = ingest.ingest(ROOT / "books-batch2.csv", self.db, self.log, now=lambda: NOW)
+        batch2 = ingest.ingest(ROOT / "books-batch2.csv", self.db, self.log, now=lambda: NOW, corrections_path=self.corrections)
         self.assertEqual((batch2["counts"]["loaded"], batch2["counts"]["skipped_existing"]), (0, 200))
         self.assertEqual(self.books(), 10000)
         self.assertEqual(len(self.log_entries()), 2)

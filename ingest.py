@@ -4,6 +4,10 @@ run to ingestion-log.json (read it with report.html).
     python ingest.py books.csv
     python ingest.py fixed-rows.csv --reprocess-of 20261031T140501-3f2a1c
 
+If isbn-corrections.csv exists (approved by a person; see lookup_isbns.py and
+rules.md section 5), its corrections are applied too -- read from the file,
+never from the internet.
+
 No AI and no network: the same file against the same database on the same
 day always gives the same result. Every row is checked on every run, and the
 whole run is one database transaction, so a failed run saves nothing.
@@ -25,6 +29,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import corrections as corrlib
 from validate import (IDENTIFYING_FIELDS, ISSUE_TYPES, REFRESHABLE_FIELDS,
                       REQUIRED_COLUMNS, REVIEW_CODES, Issue, RowResult,
                       validate_row)
@@ -41,7 +46,17 @@ WARNING_ACTION = {
     SKIPPED: "SKIPPED (already in the database); the warning still applies",
 }
 
-BOOK_FIELDS = ("goodreads_book_id",) + IDENTIFYING_FIELDS + ("source_isbn", "source_isbn13") + REFRESHABLE_FIELDS
+NOTE_ACTION = {
+    LOADED: "LOADED (note only, not a warning)",
+    UPDATED: "UPDATED (note only, not a warning)",
+    SKIPPED: "SKIPPED (already in the database; note only)",
+}
+
+# Where an approved correction came from, and why a book needs no ISBN. Updated (and audited)
+# whenever a new value arrives; a blank never erases them.
+PROVENANCE_FIELDS = ("isbn13_source", "publication_year_source", "no_isbn_reason")
+
+BOOK_FIELDS = ("goodreads_book_id",) + IDENTIFYING_FIELDS + ("source_isbn", "source_isbn13") + REFRESHABLE_FIELDS + PROVENANCE_FIELDS
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS books (
@@ -107,6 +122,8 @@ class Run:
         self.repaired = 0
         self.not_loaded = []        # issue lines for rejected rows
         self.warnings = []          # issue lines for rows that were loaded with a warning
+        self.notes = []             # issue lines for notes (e.g. accepted without ISBN)
+        self.corrected = 0          # rows where an approved correction was applied
         self.accepted_ids = set()   # goodreads_book_ids of rows that weren't rejected
 
     # --- database helpers -------------------------------------------------
@@ -137,7 +154,7 @@ class Run:
         self.not_loaded.append(issue_line(self.source_file, res, issue, "REJECTED: not loaded"))
         return REJECTED
 
-    def process(self, res: RowResult):
+    def process(self, res: RowResult, corrected=False):
         if res.rejected:
             outcome = self.reject(res, res.rejection)
         else:
@@ -154,6 +171,9 @@ class Run:
                     if issue.code in REVIEW_CODES:
                         self.review(res, gid, issue)
                     self.warnings.append(issue_line(self.source_file, res, issue, WARNING_ACTION[outcome]))
+                for issue in res.notes:
+                    self.notes.append(issue_line(self.source_file, res, issue, NOTE_ACTION[outcome]))
+                self.corrected += corrected
         if outcome != REJECTED:
             self.accepted_ids.add(str(res.record["goodreads_book_id"]))
         self.outcomes.append(outcome)
@@ -195,6 +215,9 @@ class Run:
         for f in REFRESHABLE_FIELDS + ("source_isbn", "source_isbn13"):
             if rec[f] != old[f]:
                 changes.append((f, old[f], rec[f], "refreshed value that doesn't identify the book"))
+        for f in PROVENANCE_FIELDS:
+            if rec[f] is not None and rec[f] != old[f]:
+                changes.append((f, old[f], rec[f], "approved correction"))
         if not changes:
             return SKIPPED
         for f, cur, new, reason in changes:
@@ -231,6 +254,14 @@ def append_log(log_path: Path, entries: list, entry: dict):
     os.replace(tmp, log_path)
 
 
+def ensure_columns(conn):
+    """Add columns introduced after a database was first created (keeps old books.db files working)."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(books)")}
+    for f in BOOK_FIELDS:
+        if f not in have:
+            conn.execute(f"ALTER TABLE books ADD COLUMN {f}")
+
+
 def read_csv(path: Path):
     try:
         with open(path, encoding="utf-8-sig", newline="") as fh:
@@ -259,7 +290,8 @@ def actions_required(not_loaded, warnings):
 
 
 # --- one run ----------------------------------------------------------------
-def ingest(csv_path, db_path=DB_PATH, log_path=LOG_PATH, now=datetime.now, reprocess_of=None) -> dict:
+def ingest(csv_path, db_path=DB_PATH, log_path=LOG_PATH, now=datetime.now, reprocess_of=None,
+           corrections_path=corrlib.CORRECTIONS_PATH) -> dict:
     csv_path, log_path = Path(csv_path), Path(log_path)
     earlier_runs = read_log(log_path)                     # checked before anything is changed
     started = now()
@@ -269,18 +301,28 @@ def ingest(csv_path, db_path=DB_PATH, log_path=LOG_PATH, now=datetime.now, repro
     conn = sqlite3.connect(db_path, isolation_level=None)  # transaction managed below
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    ensure_columns(conn)
     prev = conn.execute("SELECT run_id FROM runs WHERE file_sha256 = ? AND status != ? ORDER BY started_at DESC LIMIT 1",
                         (sha, FAILED)).fetchone()
     run = Run(conn, run_id, csv_path.name, now)
     rows_read, status, error = 0, FAILED, None
+    corr = corrlib.Corrections()
     try:
         if reprocess_of and not conn.execute("SELECT 1 FROM runs WHERE run_id = ?", (reprocess_of,)).fetchone():
             raise IngestError(f"--reprocess-of {reprocess_of}: no earlier run with that ID in {db_path}")
         rows = read_csv(csv_path)
         rows_read = len(rows)
+        try:
+            corr = corrlib.load(corrections_path)
+        except corrlib.CorrectionsError as e:
+            raise IngestError(str(e))
         conn.execute("BEGIN")
         for i, raw in enumerate(rows):
-            run.process(validate_row(raw, i + 2, started.date()))   # row 1 is the header, as in a spreadsheet
+            res = validate_row(raw, i + 2, started.date())          # row 1 is the header, as in a spreadsheet
+            if res.record is not None:
+                for f in PROVENANCE_FIELDS:
+                    res.record.setdefault(f, None)
+            run.process(res, corrected=corrlib.apply(res, corr))
         if len(run.outcomes) != rows_read:
             raise IngestError(f"counts don't add up: read {rows_read} rows but processed {len(run.outcomes)}")
         if reprocess_of:
@@ -320,12 +362,15 @@ def ingest(csv_path, db_path=DB_PATH, log_path=LOG_PATH, now=datetime.now, repro
             "read": rows_read,
             "loaded": c[LOADED], "updated": c[UPDATED], "skipped_existing": c[SKIPPED], "rejected": c[REJECTED],
             "repaired": run.repaired, "rows_with_warnings": rows_with_warnings,
+            "corrected": run.corrected, "accepted_without_isbn": len({n["row_number"] for n in run.notes}),
         },
         "counts_add_up": None if status == FAILED else rows_read == sum(c.values()),
         "problem_counts": problem_counts,
         "actions_required": actions,
         "not_loaded": run.not_loaded,
         "warnings": run.warnings,
+        "notes": run.notes,
+        "corrections": corr.summary(),
     }
     append_log(log_path, earlier_runs, entry)
     return entry
@@ -337,12 +382,17 @@ def main(argv=None):
     p.add_argument("--reprocess-of", metavar="RUN_ID", help="run ID whose rejected rows this file corrects")
     p.add_argument("--db", default=DB_PATH, help=f"SQLite database (default: {DB_PATH})")
     p.add_argument("--log", default=LOG_PATH, help=f"run log (default: {LOG_PATH})")
+    p.add_argument("--corrections", default=corrlib.CORRECTIONS_PATH,
+                   help=f"approved corrections, used if the file exists (default: {corrlib.CORRECTIONS_PATH})")
     a = p.parse_args(argv)
-    e = ingest(a.csv_file, a.db, a.log, reprocess_of=a.reprocess_of)
+    e = ingest(a.csv_file, a.db, a.log, reprocess_of=a.reprocess_of, corrections_path=a.corrections)
     n = e["counts"]
     print(f"{e['status']}: read {n['read']}, loaded {n['loaded']}, updated {n['updated']}, "
           f"skipped (already exist) {n['skipped_existing']}, rejected {n['rejected']} "
           f"| repaired {n['repaired']}, with warnings {n['rows_with_warnings']}")
+    if e["corrections"]["file"]:
+        print(f"Corrections from {e['corrections']['file']}: {n['corrected']} applied, "
+              f"{n['accepted_without_isbn']} accepted without ISBN, {len(e['corrections']['unusable'])} unusable")
     if e["error"]:
         print("Error:", e["error"])
     print(f"Run {e['run_id']} added to {a.log}. Open report.html to read it.")

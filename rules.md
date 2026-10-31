@@ -111,9 +111,41 @@ Every run writes a report a librarian can read without opening the CSV or the da
 
 Every repair and every database change also goes in an audit log: import ID, row, field, old value, new value, reason, time, automatic or manual, and source file.
 
-## 5. Examples: ISBN values and what the rules do with them
+## 5. Looking up missing ISBNs and approving corrections
 
-24 examples, some taken from the data (the book number is given) and some made up. **Good** = a valid ISBN as written. **Repairable** = bad as written, but the rules can fix it without guessing. **Bad** = can't be used as an ISBN, or the row can't be loaded as is.
+The nightly load never uses the internet. Missing information is looked up **separately**, and only a person can approve what was found.
+
+1. **The lookup is its own step.** `lookup_isbns.py` is run by hand, never as part of the nightly load. It finds every book in a file that has an ISBN or year warning and searches **Open Library** (openlibrary.org) by title and first author. It goes no faster than 1 search per second, identifies itself, and saves every answer so the same search is never repeated.
+   - **Amazon is not used:** its terms forbid automated lookups.
+2. **The lookup only suggests.** One search finds the *book*, which usually has several editions with different ISBNs. So the lookup writes its suggestions to `isbn-suggestions.csv` and never decides which one is right.
+3. **A person approves.** In the suggestions file, the person fills in the approval columns, then saves the file as `isbn-corrections.csv`:
+   - `approved_isbn13`: the ISBN they checked, typed as `ISBN 978…` so Excel keeps it as text;
+   - `approved_year`;
+   - `approved_no_isbn_reason`: `ebook` or `self-published`;
+   - `approved_by`: their name.
+
+   A row with no name in `approved_by` is not approved and is ignored.
+4. **Approved corrections are used the same way every time.** The nightly load reads `isbn-corrections.csv` if it exists, with no internet, and matches corrections to books by `goodreads_book_id`. The same file plus the same corrections always gives the same result.
+5. **A correction only fills a gap.** It may fill an ISBN that is missing or unusable, or a year that is missing or invalid. It **never replaces a valid value already in the file.** If it would, it isn't used, and the book gets a warning.
+6. **A correction must itself pass the rules.**
+   - An approved ISBN must be a valid ISBN-13, or a valid ISBN-10, which is converted.
+   - An approved year must be a whole number other than 0.
+   - The reason must be `ebook` or `self-published`.
+   - A correction that fails, or a book with two different corrections, isn't used, and the book gets a warning.
+7. **An approved ISBN that already belongs to another book** → REJECT and review, the same as any other ISBN (section 2, rule 3).
+8. **Every correction is traceable.** The database stores where the ISBN or year came from (for example "Open Library; approved by Abigail"). The audit log records the old and new value, and the run log lists the corrections file used.
+9. **An applied correction is a repair, not a warning**, so it doesn't stop a run from being SUCCESS.
+10. **When nothing is found**, the suggestions file says so, and the book keeps its warning until someone finds the information.
+11. **Ebooks and self-published books don't need an ISBN.**
+    - If a person has approved `approved_no_isbn_reason` as `ebook` or `self-published` for a book with no usable ISBN, the book **passes validation without one**. Its ISBN warnings are replaced by a **note**: "accepted without ISBN: ebook (approved by …)".
+    - A note is not a warning, so it doesn't stop a run from being SUCCESS. Every note still appears in the report, so nothing is hidden.
+    - The file itself says nothing about format. So a book is never treated as an ebook or self-published by guessing, only on a person's approval.
+    - The lookup only *hints* at it (for example, Open Library lists the format as ebook, the publisher is "CreateSpace" or "Independently published", or the file holds a Nook ebook code).
+12. **A broken corrections file stops the run.** If `isbn-corrections.csv` exists but can't be read, or is missing a required column, the run is FAILED and nothing is saved, the same as a broken book file.
+
+## 6. Examples: ISBN values and what the rules do with them
+
+29 examples, some taken from the data (the book number is given) and some made up. **Good** = a valid ISBN as written. **Repairable** = bad as written, but the rules can fix it without guessing. **Bad** = can't be used as an ISBN, or the row can't be loaded as is.
 
 Unless a row says otherwise, the value is in the `isbn` (ISBN-10) column and the rest of the row is fine.
 
@@ -143,3 +175,8 @@ Unless a row says otherwise, the value is in the `isbn` (ISBN-10) column and the
 | 22 | `439023483` again, same `goodreads_book_id`, nothing else changed | `books-batch2.csv` | Repairable | UNCHANGED. No new record. |
 | 23 | `9780439023481` on a **different** `goodreads_book_id` | made up | **Bad** | REJECT + review: this ISBN already belongs to another book. |
 | 24 | `0439023483`, same `goodreads_book_id`, but the title has changed | made up | **Bad** | REJECT + review: the existing record is not overwritten. |
+| 25 | both empty, plus an approved correction `ISBN 9780316175869` | book 106, *Bossypants* | Repairable | REPAIR from the approved correction: ISBN-13 `9780316175869`, source recorded. No warning. |
+| 26 | both empty, plus an approved reason `ebook` | made up | **Good** (no ISBN needed) | Passes without an ISBN. Shown as a note "accepted without ISBN: ebook", not a warning. |
+| 27 | `0439023483` (valid), plus an approved correction with a different ISBN | made up | **Good** | The valid ISBN is kept. The correction isn't used, and the book gets a warning. |
+| 28 | both empty, plus an approved correction `9.78032E+12` (Excel turned it into a number) | made up | **Bad** | The correction fails the ISBN rules and isn't used. The book keeps its warning, and a warning explains the correction. |
+| 29 | both empty, plus a suggested ISBN but no name in `approved_by` | made up | **Bad** | Not approved, so ignored. The book keeps its "no usable ISBN" warning. |

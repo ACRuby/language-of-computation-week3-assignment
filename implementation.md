@@ -332,3 +332,42 @@ How it's built:
 - **Tests:** `tests/test_make_report.py`, 9 tests.
 
 **Limitation:** the workbook is a snapshot. Run `make_report.py` again after each import. Each tab holds about a million rows (Excel's limit); past that, the script stops with an error instead of writing a partial file.
+
+## ISBN lookups and approved corrections (rules.md section 5)
+
+**The two steps:**
+1. **Lookup (online, run by hand).** `lookup_isbns.py` finds every book with an ISBN or year warning, using the same `validate.py` rules. It searches Open Library by title and first author, and writes `isbn-suggestions.csv`.
+   - **It follows Open Library's API rules:**
+     - at most 1 request per second;
+     - a User-Agent naming this project and its GitHub page, with no personal email address;
+     - a retry with back-off when the server is busy;
+     - every successful answer cached in `open-library-cache.json`, so a book is never searched twice;
+     - errors aren't cached, so they're retried on the next run.
+   - **Suggested ISBNs** are cleaned and checked by `isbn.py`, put into ISBN-13 form, and listed English-language editions first. Each is written as `ISBN 978…` so Excel keeps it as text. Any suggestion already used by another book in `books.db` is marked.
+   - **Ebook / self-published hints** appear only when *every* edition Open Library lists points that way. They're only hints: a person decides.
+2. **Approval (offline).** A person fills `approved_isbn13` / `approved_year` / `approved_no_isbn_reason` / `approved_by` and saves the file as `isbn-corrections.csv`. `corrections.py` reads it (UTF-8, or Excel's plain-CSV encoding) and checks every approval against the same ISBN and year rules.
+   - **No name in `approved_by`** means the row is ignored.
+   - **An approval that breaks a rule** (bad ISBN, bad year, bad reason, or two approvals for one book) isn't used, and becomes a `correction_invalid` warning on that book.
+   - **A file missing a required column** makes the run FAILED.
+
+**How `ingest.py` uses approved corrections** (no internet, so the same files always give the same result):
+
+| Situation | Result |
+|---|---|
+| Missing/unusable ISBN + approved ISBN | ISBN filled; the ISBN warnings are replaced by a repair; `isbn13_source` = "Open Library; approved by …" |
+| Missing/invalid year + approved year | Year filled; warning replaced by a repair; `publication_year_source` recorded |
+| No usable ISBN + approved `ebook` / `self-published` | Passes without an ISBN; ISBN warnings replaced by a **note** (`accepted_without_isbn`); `no_isbn_reason` recorded |
+| The file already has a valid value | The file's value is kept; `correction_not_applied` warning |
+| The approved ISBN belongs to another book | REJECTED + review (`isbn_in_use`) |
+| A book already in the database gets a correction | UPDATED once (filling the blank), then skipped on later runs |
+
+**Notes and the run log:**
+- Notes don't count as warnings, so a run whose only remaining issues are notes is **SUCCESS**.
+- Each log entry gains:
+  - `counts.corrected` and `counts.accepted_without_isbn`;
+  - a `notes` list;
+  - a `corrections` block: file name, SHA-256, number of approvals, and every approval that couldn't be used, with its reason.
+- `report.html` and the Excel report (new **Notes** tab, plus correction columns on **Runs**) show all of this.
+- `books.db` gains three columns (`isbn13_source`, `publication_year_source`, `no_isbn_reason`). They're added automatically to an existing database.
+
+**Tests:** `tests/test_corrections.py`, 21 tests. The lookup tests use a fake network, so they never contact Open Library. In total, 104 tests pass and 2 are skipped.

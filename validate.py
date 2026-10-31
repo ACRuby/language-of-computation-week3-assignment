@@ -52,7 +52,14 @@ ISSUE_TYPES = {
     "no_usable_isbn": IssueType("LOAD WITH WARNING", "The book was loaded and identified by its Goodreads ID, but it has no ISBN that passes validation.", "Look up the ISBN if the book has one (ebook-only titles may not)."),
     "isbn_conflict": IssueType("LOAD WITH WARNING", "The isbn and isbn13 columns point to different publications, so neither was stored as the book's ISBN.", "Decide which edition this record describes and correct the source row."),
     "possible_duplicate": IssueType("LOAD WITH WARNING", "No usable ISBN, and another book has the same title and author; they were not merged.", "Check whether the two records are the same publication."),
+    "correction_invalid": IssueType("LOAD WITH WARNING", "The approved correction for this book doesn't pass the rules, so it wasn't used.", "Fix the correction in isbn-corrections.csv (type ISBNs as 'ISBN 978...' so Excel keeps them as text)."),
+    "correction_not_applied": IssueType("LOAD WITH WARNING", "The approved correction would replace a valid value already in the file; corrections only fill gaps.", "Check which value is right; remove the correction if the file's value is correct."),
+    "accepted_without_isbn": IssueType("NOTE", "A person approved that this book is an ebook or self-published, so it doesn't need an ISBN.", "Nothing; listed so the decision can be traced."),
 }
+
+# Warnings an approved correction can clear (rules.md section 5).
+ISBN_WARNINGS = {"no_usable_isbn", "isbn10_invalid", "isbn_conflict"}
+YEAR_WARNINGS = {"missing_year", "invalid_year"}
 
 # Issue codes that also create a manual-review item.
 REVIEW_CODES = {"isbn_in_use", "conflicts_existing", "isbn_conflict", "possible_duplicate"}
@@ -81,6 +88,7 @@ class RowResult:
     rejection: Issue | None = None
     warnings: list[Issue] = field(default_factory=list)
     repairs: list[FieldRepair] = field(default_factory=list)
+    notes: list[Issue] = field(default_factory=list)      # reported, but not warnings (see rules.md section 5)
 
     @property
     def rejected(self) -> bool:

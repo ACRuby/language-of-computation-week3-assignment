@@ -63,7 +63,7 @@ class Workbook(unittest.TestCase):
             for name in z.namelist():
                 minidom.parseString(z.read(name))          # every part is well-formed XML
             names = re.findall(r'<sheet name="([^"]+)"', z.read("xl/workbook.xml").decode())
-        self.assertEqual(names, ["Runs", "Rows not loaded", "Warnings"])
+        self.assertEqual(names, ["Runs", "Rows not loaded", "Warnings", "Notes"])
 
     def test_runs_newest_first_with_counts_as_numbers(self):
         runs = [run("old", "2026-10-29T02:00:00"), run("new", "2026-10-31T02:00:00"), run("mid", "2026-10-30T02:00:00")]
@@ -81,7 +81,7 @@ class Workbook(unittest.TestCase):
         runs = [run("a", "2026-10-30T02:00:00", not_loaded=[issue(2), issue(5)], warnings=[issue(3, problem="no_usable_isbn")]),
                 run("b", "2026-10-31T02:00:00", not_loaded=[issue(7)])]
         counts = make_report.build_workbook(runs, self.out)
-        self.assertEqual(counts, {"Runs": 2, "Rows not loaded": 3, "Warnings": 1})
+        self.assertEqual(counts, {"Runs": 2, "Rows not loaded": 3, "Warnings": 1, "Notes": 0})
         not_loaded = self.sheet_rows(2)
         self.assertEqual([(r[1], r[2]) for r in not_loaded[1:]], [("x.csv", 7), ("x.csv", 2), ("x.csv", 5)])
         self.assertEqual(not_loaded[1][-1], "b")                     # run ID column

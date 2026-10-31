@@ -3,10 +3,11 @@
     python make_report.py
     python make_report.py --log ingestion-log.json --out ingestion-report.xlsx
 
-Three tabs, covering every run in the log:
+Four tabs, covering every run in the log:
   Runs            one row per run, newest first: status and counts
   Rows not loaded every rejected row, with why and what to do
   Warnings        every row that was loaded with a warning
+  Notes           every book accepted without an ISBN (ebook / self-published)
 
 Standard library only: the .xlsx file (a zip of XML files) is written
 directly, so nothing needs installing. The same log always produces a
@@ -58,6 +59,11 @@ RUN_COLUMNS = [
     ("Rejected", 10, _count("rejected"), "number"),
     ("Repaired", 10, _count("repaired"), "number"),
     ("Rows with warnings", 12, _count("rows_with_warnings"), "number"),
+    ("Fixed by approved correction", 13, _count("corrected"), "number"),
+    ("Accepted without ISBN", 12, _count("accepted_without_isbn"), "number"),
+    ("Corrections file", 20, lambda r, _=None: (r.get("corrections") or {}).get("file"), "text"),
+    ("Corrections not usable", 45, lambda r, _=None: "\n".join(
+        f"row {u['row_number']}: {u['problem']}" for u in (r.get("corrections") or {}).get("unusable") or []), "wrap"),
     ("Counts add up", 11, lambda r, _=None: _yes_no(r.get("counts_add_up")), "text"),
     ("Error", 30, lambda r, _=None: r.get("error"), "wrap"),
     ("Actions required", 70, lambda r, _=None: "\n".join(r.get("actions_required") or []), "wrap"),
@@ -166,6 +172,7 @@ def build_workbook(runs, out_path: Path):
         ("Runs", sheet_xml(RUN_COLUMNS, [(run, None) for run in ordered])),
         ("Rows not loaded", sheet_xml(ROW_COLUMNS, [(run, row) for run in ordered for row in run.get("not_loaded") or []])),
         ("Warnings", sheet_xml(ROW_COLUMNS, [(run, row) for run in ordered for row in run.get("warnings") or []])),
+        ("Notes", sheet_xml(ROW_COLUMNS, [(run, row) for run in ordered for row in run.get("notes") or []])),
     ]
     ns = 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"'
     files = {

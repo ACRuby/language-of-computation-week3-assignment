@@ -71,7 +71,8 @@
   var COUNT_LABELS = [
     ["read", "Rows read"], ["loaded", "Loaded (new)"], ["updated", "Updated"],
     ["skipped_existing", "Skipped: already exist"], ["rejected", "Rejected"],
-    ["repaired", "Repaired"], ["rows_with_warnings", "With warnings"]
+    ["repaired", "Repaired"], ["rows_with_warnings", "With warnings"],
+    ["corrected", "Fixed by approved correction"], ["accepted_without_isbn", "Accepted without ISBN"]
   ];
   var ROW_COLUMNS = [
     ["row_number", "Row"], ["goodreads_book_id", "Goodreads ID"], ["title", "Title"],
@@ -133,6 +134,21 @@
       "This exact file was already imported as run " + run.already_imported_as + "." }));
     if (run.reprocess_of) card.appendChild(el("p", { "class": "note", text:
       "Re-processes corrected rows rejected by run " + run.reprocess_of + "." }));
+    var corr = run.corrections;
+    if (corr && corr.file) {
+      var unusable = corr.unusable || [];
+      card.appendChild(el("p", { "class": unusable.length ? "note bad" : "note", text:
+        "Approved corrections read from " + corr.file + ": " + corr.approved + " usable" +
+        (unusable.length ? ", " + unusable.length + " not usable (listed below)." : ".") }));
+      if (unusable.length) {
+        card.appendChild(el("div", { "class": "table-wrap" }, [el("table", {}, [
+          el("thead", {}, [el("tr", {}, ["Row in corrections file", "Goodreads ID", "Problem"].map(function (h) { return el("th", { text: h }); }))]),
+          el("tbody", {}, unusable.map(function (u) {
+            return el("tr", {}, [el("td", { "class": "num", text: show(u.row_number) }), el("td", { text: show(u.goodreads_book_id) }), el("td", { text: show(u.problem) })]);
+          }))
+        ])]));
+      }
+    }
 
     var actions = run.actions_required || [];
     card.appendChild(el("h3", { text: "Actions required" }));
@@ -146,15 +162,20 @@
       ? "The run failed, so no rows were loaded (see the error above)."
       : "Every row was loaded or already existed." }));
 
-    var warnings = run.warnings || [];
-    if (warnings.length) {
-      var details = el("details", {}, [el("summary", { text: "Rows loaded with warnings (" + warnings.length.toLocaleString() + ")" })]);
-      details.addEventListener("toggle", function () {      // built on first open: logs can hold thousands of rows
-        if (details.open && !details.dataset.built) { details.appendChild(rowsTable(warnings)); details.dataset.built = "1"; }
-      });
-      card.appendChild(details);
-    }
+    [lazyList("Rows loaded with warnings", run.warnings || []),
+     lazyList("Notes: accepted without ISBN (not warnings)", run.notes || [])
+    ].forEach(function (list) { if (list) card.appendChild(list); });
     return card;
+  }
+
+  // A collapsed list whose table is built on first open: logs can hold thousands of rows.
+  function lazyList(label, rows) {
+    if (!rows.length) return null;
+    var details = el("details", {}, [el("summary", { text: label + " (" + rows.length.toLocaleString() + ")" })]);
+    details.addEventListener("toggle", function () {
+      if (details.open && !details.dataset.built) { details.appendChild(rowsTable(rows)); details.dataset.built = "1"; }
+    });
+    return details;
   }
 
   function render(runs, fileName) {

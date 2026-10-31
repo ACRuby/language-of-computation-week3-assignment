@@ -139,6 +139,7 @@ You'll see one box for each time the program ran, **newest at the top**. Each bo
 - **Actions required**: what a person should do next;
 - **Rows not loaded**: every rejected book, why, and what to do about it;
 - **Rows loaded with warnings**: click this line to open the list.
+- **Notes: accepted without ISBN**: books a person confirmed as ebook or self-published (see Step 10).
 
 Nothing is sent to the internet. The page just reads the file on your computer.
 
@@ -158,13 +159,14 @@ Wrote ingestion-report.xlsx: Runs: 6 row(s), Rows not loaded: 3 row(s), Warnings
 
 Then, in the File Explorer window from Step 6, double-click **ingestion-report.xlsx** to open it in Excel.
 
-It has three tabs at the bottom:
+It has four tabs at the bottom:
 
 | Tab | What's on it |
 |---|---|
 | **Runs** | One line per run, newest first, with its numbers. The status is coloured green, yellow or red. |
 | **Rows not loaded** | Every book that was rejected, why, and what to do. |
 | **Warnings** | Every book that was saved but needs checking. |
+| **Notes** | Books accepted without an ISBN because a person confirmed they're an ebook or self-published (see Step 10). |
 
 You can sort or filter any column with the small arrow in its heading.
 
@@ -172,7 +174,7 @@ The Excel file is a snapshot. After you load a file again (Step 4 or 5), repeat 
 
 ### Step 8 (optional): Run the automatic checks
 
-The project comes with 83 automatic tests that check the program follows the rules. Copy, paste and press **Enter**:
+The project comes with 104 automatic tests that check the program follows the rules. Copy, paste and press **Enter**:
 
 ```bash
 py -3.13 -m unittest discover tests
@@ -182,12 +184,89 @@ It takes about 10 seconds. First you'll see a row of dots: each dot is a test th
 
 ```
 ----------------------------------------------------------------------
-Ran 83 tests in 7.388s
+Ran 104 tests in 8.113s
 
 OK (skipped=2)
 ```
 
 `OK` means every test passed. The 2 skipped tests are for things this data doesn't have (publishers and library inventory). The time will be different.
+
+---
+
+## Fixing books with warnings: looking up missing ISBNs
+
+Some books load with a warning because their ISBN or year is missing or broken. The program never guesses, so a person has to supply the right information. These steps help you find it on **Open Library** (a free online library catalog) and approve it.
+
+You only need these steps when you want to clear warnings. They're never part of the nightly load.
+
+### Step 9: Look up suggestions on Open Library
+
+In PowerShell (still in the project folder from Step 2), copy, paste and press **Enter**:
+
+```bash
+py -3.13 lookup_isbns.py
+```
+
+The first time, this takes about **13 minutes**. It checks one book per second, as Open Library asks. You'll see progress lines like `  250/753 books looked up`. The answers are saved in `open-library-cache.json`, so running it again later takes only seconds.
+
+When it's done, it writes **`isbn-suggestions.csv`**: one row per book that has a warning.
+
+### Step 10: Check the suggestions in Excel
+
+1. In File Explorer (the project folder from Step 6), double-click **isbn-suggestions.csv**. It opens in Excel.
+2. For each book you want to fix, look at these columns:
+
+| Column | What it tells you |
+|---|---|
+| `title`, `authors` | The book |
+| `problem` | What's wrong (e.g. no usable ISBN, missing year) |
+| `suggested_isbn13s` | ISBNs Open Library has for this book. **A book has a different ISBN for each edition** (hardcover, paperback, UK edition…), so you pick one. |
+| `suggested_year` | The year Open Library says the book was first published |
+| `format_hint` | A clue that the book may be an ebook or self-published (only a clue) |
+| `open_library_link` | Copy it into your browser to see the book's editions and check which one matches |
+| `lookup_result` | `found`, `not found on Open Library`, or an error |
+
+3. For a book you've checked, fill in the **approval columns** on the same row:
+
+| Column | What to type |
+|---|---|
+| `approved_isbn13` | The ISBN you chose, **with the word ISBN in front**, e.g. `ISBN 9780316175869`. (Copy it from `suggested_isbn13s`.) Without the word ISBN, Excel turns the number into something like `9.78032E+12` and ruins it. |
+| `approved_year` | The publication year, if it was missing, e.g. `2011` |
+| `approved_no_isbn_reason` | Only if the book really has no ISBN: type `ebook` or `self-published` |
+| `approved_by` | **Your name.** A row without a name isn't approved and is ignored. |
+
+Leave a row's approval columns empty if you haven't checked that book. You don't have to do them all at once.
+
+### Step 11: Save your approvals as isbn-corrections.csv
+
+1. In Excel, click **File → Save As**.
+2. Choose the project folder (`week3-assignment`).
+3. In **File name**, type: `isbn-corrections`
+4. In **Save as type**, choose **CSV UTF-8 (Comma delimited) (\*.csv)**.
+5. Click **Save**. If Excel warns that some features may be lost, click **Yes** (or **Keep Current Format**).
+6. Close Excel before the next step.
+
+### Step 12: Load the books again
+
+Back in PowerShell, copy, paste and press **Enter**:
+
+```bash
+py -3.13 ingest.py books.csv
+```
+
+You'll now see an extra line, for example:
+
+```
+Corrections from isbn-corrections.csv: 40 applied, 12 accepted without ISBN, 0 unusable
+```
+
+- **applied:** books whose ISBN or year was filled in from your approvals. Their warnings are gone.
+- **accepted without ISBN:** books you marked as `ebook` or `self-published`. They pass without an ISBN and appear as **notes**, not warnings.
+- **unusable:** approvals that broke a rule, e.g. an ISBN Excel turned into a number. Open the report (Step 6) to see which ones and why.
+
+Then make the Excel report again (Step 7) to see the results.
+
+**When will the run be green (SUCCESS)?** Only when every book in the file either has no problems or has been fixed by an approval. Books Open Library can't find keep their warning until someone finds the information elsewhere.
 
 ---
 
@@ -202,6 +281,10 @@ OK (skipped=2)
 | `ERROR: ingestion-log.json is not valid JSON` | The log file was damaged, for example by editing it by hand. Nothing was loaded. | Get the original back from GitHub with `git checkout -- ingestion-log.json`, then try again. |
 | The web page shows only a button | That's normal: the page waits for you to choose the log file. | Do Step 6, parts 4 and 5. |
 | The status is **FAILED** (red) | The program stopped and saved nothing, so the database is unchanged. | Read the **Error** line in that run's box, fix what it says, and run the step again. |
+| `isbn-corrections.csv is missing required column(s)` | The corrections file isn't the suggestions file saved under a new name, or a column was deleted. | Redo Step 11 from `isbn-suggestions.csv` without deleting columns. |
+| A warning called `correction_invalid` | One of your approvals broke a rule. The reason is in the report, e.g. "Excel probably turned it into a number". | Fix that row in `isbn-corrections.csv` (type `ISBN 978…`), save, and run Step 12 again. |
+| A warning called `correction_not_applied` | Your approval would replace a valid value already in the book file. Approvals only fill gaps. | Remove that approval if the file's value is right. |
+| `lookup_result` says `error` | Open Library didn't answer (no internet, or it's busy). | Run Step 9 again later. Only the failed books are looked up again. |
 
 ---
 
@@ -230,6 +313,11 @@ py -3.13 ingest.py fixed-rows.csv --reprocess-of 20261031T143449-0c8457
 | `ingestion-report.xlsx` | The Excel report |
 | `books.csv` | The 10,000 books, from [goodbooks-10k](https://github.com/zygmuntz/goodbooks-10k), unchanged |
 | `books-batch2.csv` | 200 books picked at random from `books.csv` |
+| `lookup_isbns.py` | Looks up suggested ISBNs and years on Open Library (Step 9). Uses the internet, so it's never part of the nightly load. |
+| `isbn-suggestions.csv` | What the lookup found, with empty approval columns for you to fill in |
+| `isbn-corrections.csv` | Your approved corrections (Step 11), read by `ingest.py` |
+| `open-library-cache.json` | Saved Open Library answers, so nothing is looked up twice |
+| `corrections.py` | Helper code that checks and applies approved corrections |
 | `isbn.py`, `validate.py` | Helper code with the ISBN and row rules, used by `ingest.py` |
 | `import_books.py`, `report.py` | An earlier version of the program (makes `library.db` and reports in `reports/`) |
 | `tests/` | The automatic tests from Step 8 |
