@@ -3,11 +3,16 @@
     python make_report.py
     python make_report.py --log ingestion-log.json --out ingestion-report.xlsx
 
-Four tabs, covering every run in the log:
-  Runs            one row per run, newest first: status and counts
-  Rows not loaded every rejected row, with why and what to do
-  Warnings        every row that was loaded with a warning
-  Notes           every book accepted without an ISBN (ebook / self-published)
+Six tabs, covering every run in the log:
+  Runs               one row per run, newest first: status and headline counts
+  Rejected           every rejected row (needs a person), with the rule and detail
+  Warnings           every row that carries a warning, with the original value
+  Updates            every updated field, old -> new
+  Repairs            every repair that was saved
+  Breakdown by rule  how many times each rule applied, per run
+
+Runs recorded under Abigail's earlier rules (before the group's agreed rules)
+appear on the Runs tab only.
 
 Standard library only: the .xlsx file (a zip of XML files) is written
 directly, so nothing needs installing. The same log always produces a
@@ -52,43 +57,50 @@ RUN_COLUMNS = [
     ("Started", 19, lambda r, _=None: _when(r.get("started_at")), "text"),
     ("File", 22, lambda r, _=None: r.get("file"), "text"),
     ("Status", 23, lambda r, _=None: r.get("status"), "status"),
-    ("Rows read", 10, _count("read"), "number"),
-    ("Loaded (new)", 12, _count("loaded"), "number"),
+    ("Rules", 22, lambda r, _=None: "agreed rules" if r.get("rules") else "earlier rules (Abigail)", "text"),
+    ("Rows processed", 11, _count("rows_read"), "number"),
+    ("Loaded clean", 10, _count("loaded_clean"), "number"),
+    ("Loaded with a warning", 12, _count("loaded_with_warning"), "number"),
     ("Updated", 10, _count("updated"), "number"),
-    ("Skipped: already exist", 13, _count("skipped_existing"), "number"),
+    ("Skipped as duplicates", 12, _count("skipped"), "number"),
     ("Rejected", 10, _count("rejected"), "number"),
-    ("Repaired", 10, _count("repaired"), "number"),
-    ("Rows with warnings", 12, _count("rows_with_warnings"), "number"),
-    ("Fixed by approved correction", 13, _count("corrected"), "number"),
-    ("Accepted without ISBN", 12, _count("accepted_without_isbn"), "number"),
-    ("Corrections file", 20, lambda r, _=None: (r.get("corrections") or {}).get("file"), "text"),
-    ("Corrections not usable", 45, lambda r, _=None: "\n".join(
-        f"row {u['row_number']}: {u['problem']}" for u in (r.get("corrections") or {}).get("unusable") or []), "wrap"),
-    ("Counts add up", 11, lambda r, _=None: _yes_no(r.get("counts_add_up")), "text"),
+    ("Rows with a warning", 12, _count("rows_with_warning"), "number"),
+    ("Rows repaired", 10, _count("rows_repaired"), "number"),
+    ("Counts add up", 11, lambda r, _=None: _yes_no(r.get("counts_add_up")) if r.get("rules") else None, "text"),
     ("Error", 30, lambda r, _=None: r.get("error"), "wrap"),
-    ("Actions required", 70, lambda r, _=None: "\n".join(r.get("actions_required") or []), "wrap"),
-    ("Already imported as", 24, lambda r, _=None: r.get("already_imported_as"), "text"),
-    ("Re-processes run", 24, lambda r, _=None: r.get("reprocess_of"), "text"),
+    ("Status note", 50, lambda r, _=None: r.get("status_note"), "wrap"),
     ("Finished", 19, lambda r, _=None: _when(r.get("finished_at")), "text"),
     ("Run ID", 24, lambda r, _=None: r.get("run_id"), "text"),
 ]
 
-ROW_COLUMNS = [
+_BOOK = [
     ("Run started", 19, lambda r, row: _when(r.get("started_at")), "text"),
     ("File", 20, lambda r, row: row.get("source_file") or r.get("file"), "text"),
     ("Row", 7, lambda r, row: row.get("row_number"), "number"),
     ("Goodreads ID", 13, lambda r, row: row.get("goodreads_book_id"), "text"),
     ("Title", 40, lambda r, row: row.get("title"), "wrap"),
-    ("isbn (original)", 14, lambda r, row: row.get("original_isbn"), "text"),
-    ("isbn13 (original)", 19, lambda r, row: row.get("original_isbn13"), "text"),
-    ("Field", 14, lambda r, row: row.get("field"), "text"),
-    ("Problem", 20, lambda r, row: row.get("problem"), "text"),
-    ("Detail", 45, lambda r, row: row.get("detail"), "wrap"),
-    ("Action taken", 26, lambda r, row: row.get("action"), "wrap"),
-    ("Why", 45, lambda r, row: row.get("why"), "wrap"),
-    ("What to do", 45, lambda r, row: row.get("what_to_do"), "wrap"),
-    ("Run ID", 24, lambda r, row: r.get("run_id"), "text"),
 ]
+_RUN_ID = [("Run ID", 24, lambda r, row: r.get("run_id"), "text")]
+
+
+def _get(key):
+    return lambda r, row: row.get(key)
+
+
+REJECTED_COLUMNS = _BOOK + [("Rule", 22, _get("reason"), "text"), ("Detail", 50, _get("detail"), "wrap"),
+                            ("What the system did", 30, _get("action"), "wrap")] + _RUN_ID
+WARNING_COLUMNS = _BOOK + [("Field", 9, _get("field"), "text"), ("Original value", 20, _get("raw_value"), "text"),
+                           ("Rule(s)", 30, _get("reason"), "text"), ("What the system did", 40, _get("action"), "wrap")] + _RUN_ID
+UPDATE_COLUMNS = _BOOK + [("Field", 20, _get("field"), "text"), ("Old", 30, _get("old"), "wrap"),
+                          ("New", 30, _get("new"), "wrap")] + _RUN_ID
+REPAIR_COLUMNS = _BOOK + [("Field", 9, _get("field"), "text"), ("Original value", 20, _get("original"), "text"),
+                          ("Repaired value", 16, _get("new"), "text"), ("Rule", 26, _get("reason"), "text")] + _RUN_ID
+BREAKDOWN_COLUMNS = [
+    ("Run started", 19, lambda r, row: _when(r.get("started_at")), "text"),
+    ("File", 20, lambda r, row: r.get("file"), "text"),
+    ("Rule (rules.md section 5)", 28, lambda r, row: row[0], "text"),
+    ("Times", 10, lambda r, row: row[1], "number"),
+] + _RUN_ID
 
 
 def newest_first(runs):
@@ -168,11 +180,16 @@ STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 def build_workbook(runs, out_path: Path):
     ordered = newest_first(runs)
+    agreed = [run for run in ordered if run.get("rules")]     # row details exist only under the agreed rules
+    rows = lambda key: [(run, row) for run in agreed for row in run.get(key) or []]  # noqa: E731
     sheets = [
         ("Runs", sheet_xml(RUN_COLUMNS, [(run, None) for run in ordered])),
-        ("Rows not loaded", sheet_xml(ROW_COLUMNS, [(run, row) for run in ordered for row in run.get("not_loaded") or []])),
-        ("Warnings", sheet_xml(ROW_COLUMNS, [(run, row) for run in ordered for row in run.get("warnings") or []])),
-        ("Notes", sheet_xml(ROW_COLUMNS, [(run, row) for run in ordered for row in run.get("notes") or []])),
+        ("Rejected", sheet_xml(REJECTED_COLUMNS, rows("needs_attention"))),
+        ("Warnings", sheet_xml(WARNING_COLUMNS, rows("warnings"))),
+        ("Updates", sheet_xml(UPDATE_COLUMNS, rows("updates"))),
+        ("Repairs", sheet_xml(REPAIR_COLUMNS, rows("repairs"))),
+        ("Breakdown by rule", sheet_xml(BREAKDOWN_COLUMNS, [(run, item) for run in agreed
+                                                            for item in (run.get("problem_counts") or {}).items()])),
     ]
     ns = 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"'
     files = {

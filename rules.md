@@ -1,182 +1,250 @@
-# Rules for the Nightly Book Import
+# Agreed rules for loading `books.csv` / `books-batch2.csv`
 
-These are the rules the import code must follow. They come from my requirements document for this project and the six decisions I approved after reviewing it against `data-validation.md`. The data is `books.csv` from goodbooks-10k (and nightly files in the same format, like `books-batch2.csv`).
+This is the **one shared `rules.md`** for the group (Kristina, Anthony,
+Abigail), merged from the three independent versions per the decisions made
+in the 2026-11-06 rules-merge meeting. Every rule below traces back to one
+of two places:
 
-**The most important rule: the system never invents information to make a record look valid.** It never changes an ISBN digit, never guesses a year or an author, and never merges two books because their titles look alike.
+- a numbered **Decision** from the meeting (see
+  [`rules-comparison.md`](rules-comparison.md) for the full three-way
+  comparison those decisions were made against), or
+- an **Open item** the group voted to implement or skip.
 
-Every repair, rejection and warning keeps the original value from the source file.
+One pair of decisions from the meeting directly conflicted with each other
+— that's called out and resolved explicitly rather than silently, see
+**Resolved conflict** below, instead of just picking a side with no record
+of it.
+
+## 0. What changed from each person's original rules.md
+
+| Area | Decision | Outcome |
+|---|---|---|
+| Book identity | Decision 1 | **`goodreads_book_id`** (Abigail's model) — not ISBN |
+| Bad-but-isolated ISBN problems | Decision 2 | **Load, warn, null the field** (Kristina's model) — never reject the row for this alone |
+| No usable ISBN at all | Decision 3 | **Load with a warning** (Abigail's model) — not silent, not rejected |
+| Update semantics | Decision 4 | **Abigail's two-camp split**: volatile metadata updates freely; identity-relevant fields reject + flag on conflict |
+| Database schema | Decision 5 | **Kristina's two-table schema** (`books` + `warnings`), with `goodreads_book_id` added and indexed as the identity field — see [`erd.md`](erd.md) |
+| Title comparison | Decision 6 | **Case-insensitive** (Kristina's/Anthony's model) — Abigail's case-sensitive comparison is not adopted |
+| Report format | Decision 7 | **Abigail's three-tier run status** (SUCCESS / COMPLETED WITH ISSUES / FAILED), plus Kristina's existing report-content requirements |
+| Anthony's extra ISBN repairs + multi-code reporting | Open item | **Implement** |
+| ISBN-13 prefix (978/979) check | Open item | **Implement** |
+| Abigail's publication-year / missing-title / missing-author / language-code rules | Open item | **Skip** |
+| Abigail's atomicity guarantee (failed run saves nothing) | Open item | **Skip** — `FAILED` is a status label only; see **Resolved conflict** below |
+| Abigail's external lookup + human-approval correction workflow | Open item | **Skip** |
+
+### Resolved conflict: Decision 7 vs. the Open Items atomicity vote
+
+**Decision 7** adopts Abigail's reporting requirements wholesale, which
+*include* a three-tier run status where **FAILED means nothing is
+saved** — that's the same atomicity guarantee as her §4.2 rule. **The Open
+Items vote separately, and explicitly, marked "Abigail's atomicity
+guarantee" as "skip, do not implement."** As written, those two decisions
+contradicted each other.
+
+**Resolution:** the more specific, explicitly-named decision wins over the
+broader one it's nested inside. Decision 7's "go with Abby's reporting
+requirements" is a general adoption that happens to bundle several of her
+rules together; the Open Items vote is a separate, targeted decision made
+about this exact guarantee by name. So:
+
+- The **three-tier status** (SUCCESS / COMPLETED WITH ISSUES / FAILED) is
+  implemented, per Decision 7.
+- The **atomicity guarantee behind FAILED is not implemented**, per the
+  Open Items vote. `FAILED` is a status label describing what happened,
+  not a promise about what's in `books.db` afterward — a `FAILED` run may
+  have partially written rows before it stopped.
+- To avoid the report making a claim nothing enforces, **the report must
+  say so explicitly** whenever it reports `FAILED`: something like "Status:
+  FAILED — the group did not implement an atomicity guarantee for this
+  pipeline; rows from before the failure may already be saved." This is
+  the same honesty principle Abigail's own rules.md uses elsewhere ("the
+  report never claims an ISBN was verified unless it actually was") —
+  applied here to not claim a safety property the code doesn't have.
+
+This keeps both decisions true to what was actually voted on, without
+silently picking one over the other or inventing a compromise nobody
+agreed to.
 
 ---
 
-## 1. Repair, reject, or load with a warning
+## 1. For each kind of ISBN problem: repair, reject, or load with a warning?
 
-Three possible actions:
-
-- **REPAIR:** correct it automatically. Allowed only when there is exactly one possible right answer, so the correction is not a guess.
-- **REJECT:** don't load the row; keep it for a person to fix and re-import.
-- **LOAD WITH WARNING:** load the row, but list it in the report for someone to look at.
-
-**An invalid ISBN does not reject the whole book.** Every row has a `goodreads_book_id`, which identifies the book. So a book with a bad or missing ISBN can still be loaded, just without an ISBN and with a warning.
-
-### ISBN problems
-
-| Problem (from `data-validation.md`) | Action | Why |
-|---|---|---|
-| Spaces, hyphens, or an `ISBN` label in the value | REPAIR: remove them | The ISBN manual says hyphens and spaces have no meaning; they're only for readability. |
-| ISBN-10 ending in lowercase `x` | REPAIR: make it `X` | Same character, same meaning. |
-| Valid ISBN-10 | Convert to ISBN-13 (978 + first 9 digits + new check digit); keep the ISBN-10 as an alternate | The catalog stores ISBN-13, as the ISBN manual recommends. |
-| ISBN-10 missing 1–3 leading zeros (6,587 rows) | REPAIR: add the zeros back | An ISBN-10 is always 10 characters, so there is only one possible answer. **Only allowed if the check digit then passes.** Not allowed for more than 3 missing zeros, because very short junk (like `0`) would then "pass". |
-| ISBN-10 with a wrong check digit (23 rows) | ISBN unusable → LOAD WITH WARNING | Fixing the check digit means assuming the other 9 digits are right. That's a guess. |
-| ISBN-13 in scientific notation (`9.78043902348e+12`, 9,382 rows) | **Never used as an ISBN.** If the row has a valid ISBN-10 whose ISBN-13 matches the rounded number, store that ISBN-13: REPAIR, not a warning. If not, the ISBN-13 is unusable. | The last digit is gone, and in 45% of rows the 12th digit was rounded up. Recalculating a check digit from what's left gives a wrong ISBN almost half the time. The ISBN-10 is the only safe source. |
-| ISBN-13 column holds something that isn't an ISBN (Nook `2940…`, store barcodes, placeholders, 28 rows) | ISBN-13 unusable; warning only if the book has no other usable ISBN | These books have no ISBN-13 in the source. There's nothing to restore. |
-| Truncated `.0` value (`97893806587.0`, 5 rows) | ISBN-13 unusable | Digits are missing and nothing says what they were. |
-| A number written as `….0` but with all 13 digits present | REPAIR: write it as plain digits | No digit changes. |
-| ISBN-13 with a wrong check digit, wrong length, letters, or a prefix other than 978/979 | ISBN unusable | It fails the ISBN rules. Digits are never changed to make it pass. |
-| `isbn` and `isbn13` point to different publications (19 rows) | LOAD WITH WARNING + manual review; no ISBN stored for the book | Each format gets its own ISBN, so these are probably different editions. Which one this record is can't be known from the file. |
-| No usable ISBN at all (565 rows) | LOAD WITH WARNING | The Goodreads ID still identifies the book. Ebooks often have no ISBN. |
-
-A **valid** ISBN only means the number is well formed. It does not prove the ISBN was assigned to this book. The report never claims an ISBN was "verified" unless an outside source was actually checked.
-
-### Other fields
+The governing principle (Decision 2, Kristina's model, kept): **a repair is
+only allowed when it is deterministic and checksum-verifiable.** A bad or
+unusable ISBN **never rejects the row** — the row is always loaded (its
+identity doesn't depend on having an ISBN at all; see §2). A bad ISBN only
+nulls that one field and attaches a warning.
 
 | Problem | Action | Why |
 |---|---|---|
-| Extra spaces at the start/end or in the middle of a title or author (107 / 168 rows) | REPAIR | Whitespace carries no meaning. |
-| Year written as `2008.0` (every row) | REPAIR to `2008` | Format only, no information changes. |
-| Missing title, or a title that's only spaces | REJECT | A book can't be cataloged without a title. |
-| Missing or invalid `goodreads_book_id` | REJECT | Without it the book can't be matched, so loading it could create a duplicate. |
-| Missing author | LOAD WITH WARNING | Not needed to identify the book. Left blank, never guessed. |
-| Missing publication year (21 rows) | LOAD WITH WARNING | Left blank, never filled with the current year. |
-| Year that isn't a whole number, or year 0 | Drop that field and warn | The rest of the row is still fine. |
-| Negative year (31 rows) | Accept as BC | `-750` for Homer is a real date, not an error. |
-| Year later than the import date | LOAD WITH WARNING | Could be a typo or an upcoming book. A person should check. |
-| Different capitalization | Keep it as written | Not an error. |
-| Special characters in titles (`&`, `é`, Arabic script) | Keep | They're part of the title. |
-| Missing language code (1,084 rows) | Accept, no warning | Optional field. Warning would only add noise. |
+| Already a valid ISBN-10 or ISBN-13 (978/979-prefixed) | **Load, no warning** | Nothing to fix. |
+| Valid, but formatted with hyphens/spaces | **Repair** (strip separators) | Cosmetic; checksum unaffected. |
+| `isbn` with leading zero(s) stripped (7–9 digits) | **Repair**: zero-pad to 10 digits, only if the padded result passes the checksum | Deterministic; single possible correction. |
+| 10-digit `isbn` fails its checksum, but `978 + those 10 digits` is a valid ISBN-13 | **Repair** *(new — Anthony's "stripped-978" repair, Open item: implement)*: recompute the correct ISBN-10 check digit from the ISBN-13 that does check out | Still deterministic — the ISBN-13 proves there's exactly one right ISBN-10 check digit. |
+| `isbn13` stored as scientific notation / float **and** the row has a valid (or repaired) `isbn` | **Repair**: re-derive `isbn13` from `isbn` via the `978` + check-digit formula | One valid ISBN-10 → exactly one correct ISBN-13. |
+| `isbn13` stored as scientific notation / float **and** no usable `isbn`, **but** `isbn13` is a valid 978-prefixed ISBN-13 that could derive an `isbn` | **Repair** *(new — Anthony's "Missing Counterpart," Open item: implement)*: derive `isbn` from the valid `isbn13` | Reverse of the row above; still exactly one right answer. 979-prefixed ISBN-13s have no ISBN-10 form and are skipped here. |
+| `isbn13` stored as scientific notation / float, no usable `isbn`, and no 978-prefixed `isbn13` to derive from | **Load with a warning**; null `isbn13`; keep raw text in an audit column | Digits are permanently lost; nothing to verify a reconstruction against. |
+| Right length/character set, wrong check digit | **Load with a warning**; null the field; keep raw value | Could be any digit — not safely correctable. |
+| Invalid character (letter where only a digit/trailing `X` belongs) | **Load with a warning**; null the field | Same reasoning. |
+| Wrong length that isn't a leading-zero case | **Load with a warning**; null the field | No single deterministic correction. |
+| 13-digit value with a valid Mod-10 checksum but a prefix other than 978/979 | **Load with a warning**; null the field *(new — Open item: implement the prefix check)* | Not an ISBN-13 by definition, whatever its checksum says. Neither Kristina's nor Anthony's original rules checked this — it was a shared gap. |
+| A valid ISBN-13 sitting in the `isbn` (ISBN-10) column | **Repair**: move the value into `isbn13`, null `isbn` | Structural fix, not a value guess. |
+| Both `isbn` and `isbn13` empty | **Load, with a warning** *(changed by Decision 3 — Abigail's model; Kristina's original treated this as informational-only, not a warning)* | The row is still fully identified by `goodreads_book_id` (§2), so there's no reason to hide the missing ISBN from the report. |
+| A valid ISBN matches a book already on file under a **different `goodreads_book_id`** | **Reject** the incoming row *(reframed under Decision 1 — collision is keyed on `goodreads_book_id`, not title, since identity is no longer ISBN-based)* | Abigail's §2 rule 3: one ISBN can't belong to two publications; the system won't choose between them. |
+| A completely unparseable value (letters only, symbols, garbage) | **Load with a warning**; null the field | Not a repairable format. |
+| The row itself fails to parse as CSV (wrong field count, broken quoting) | **Reject the row**, reason recorded | All three original rule sets agreed on this — the only row-level rejection. |
+| A single field hits more than one of the above at once | **List every applicable reason, comma-separated** *(new — Anthony's rule, Open item: implement)* | e.g. a Nook code with no `isbn` to recover from both lost its digits and isn't a book identifier at all. |
 
-**Not applicable to this data:** publisher, edition, format and physical copies/inventory. `books.csv` has no such columns, so these rules aren't implemented. That also means repeated imports can't inflate any inventory count.
+**Explicitly not implemented** (Open items vote: skip) — Abigail's
+publication-year validation (including the BC/negative-year rule and
+year-later-than-import-date warning), her missing-title/missing-author
+handling, and her language-code handling. These fields are passed through
+without new validation.
 
-## 2. What makes two rows the same book
+## 2. What makes two rows the same book?
 
-Three ideas are kept separate:
+**Identity is `goodreads_book_id` alone** (Decision 1, Abigail's model).
+Every row in this dataset carries one, it's never blank, and it's unique —
+so unlike the ISBN-based identity in the original rules, there is no "row
+with no usable identity" case anymore.
 
-- **Work:** the story itself. In this data it's `work_id`.
-- **Publication:** one edition in one format, with its own ISBN. In this data it's `goodreads_book_id`.
-- **Physical copy:** a book the library owns. Not in this data.
+- **ISBN is a secondary, validated attribute, not the identity key.** It's
+  repaired/warned per §1, and checked for collisions (above), but it never
+  decides whether two rows are the same book.
+- **No fuzzy title/author matching, ever** — this was already common ground
+  across all three original rule sets and isn't touched by any decision.
+- **Title normalization is case-insensitive** (Decision 6): lowercase, strip
+  punctuation and extra whitespace. A capitalization-only difference is not
+  a title change for any purpose in this document, including the
+  identity-relevant-field check in §3.
 
-Matching rules:
+## 3. What happens when a book already in the database arrives again?
 
-1. **Same `goodreads_book_id` = same publication.** This is the trusted internal ID. It's never blank, and it's unique across all 10,000 rows. (`book_id` is only this dataset's row number, so it isn't used for matching.)
-2. **ISBNs are compared as normalized ISBN-13s.** Formatting is removed and ISBN-10s are converted first, so `0439023483`, `0-439-02348-3` and `9780439023481` are the same ISBN.
-3. **Same ISBN-13 but a different `goodreads_book_id`** → REJECT and send for manual review. One ISBN can't belong to two publications, and the system won't choose between them.
-4. **Different valid ISBNs are different publications**, even with the same title and author. A paperback and an ebook stay separate.
-5. **Same title alone never means the same book.** goodbooks-10k has 33 titles shared by different books, like two different *The Stranger*s.
-6. **A book with no usable ISBN** is matched only by `goodreads_book_id`. If a new one has the same title and author as an existing book, it's still loaded as its own record, but flagged as a **possible duplicate** for review.
-7. **Exact duplicate rows in the same file** load once. Later copies are UNCHANGED.
+Matching is by `goodreads_book_id` (§2). Once a match is found, Decision 4
+(Abigail's model) splits every other field into two camps:
 
-## 3. A book that's already in the database arrives again
+**Volatile metadata — always updated, no review needed:**
+`average_rating`, `ratings_count`, `work_ratings_count`,
+`work_text_reviews_count`, `ratings_1`–`ratings_5`, `books_count`,
+`image_url`, `small_image_url`, `best_book_id`, `book_id`.
+
+**Identity-relevant fields — frozen once set:**
+`title` (beyond case/whitespace, per §2), `authors`,
+`original_publication_year`, `work_id`, `language_code`, and any change to
+an already-populated `isbn`/`isbn13`.
 
 | What's different | What happens |
 |---|---|
-| Nothing | **UNCHANGED.** No new record, and the existing one isn't touched. |
-| A field that was empty is now filled in (author, year, original title, language, ISBN) | **UPDATED**, after the new value passes validation. Recorded in the audit log. |
-| A value is missing in the new row but present in the database | Keep the database value. Missing information never erases existing information. |
-| Title differs only in spaces | **UNCHANGED.** Spaces are repaired before comparing. |
-| Title (any other change, capitals included), author, year, `work_id` or language changes | **REJECT and review.** Nothing from the row is applied, and the existing record stays as it was. |
-| ISBN changes | **Never overwrite. REJECT and review.** |
-| Ratings counts, average rating, `books_count`, image URLs, `book_id`, `best_book_id` change | **UPDATED.** These change every night and don't identify the book. Every change is recorded in the audit log with old and new values. |
+| Nothing | **Skip**, logged as `duplicate, no changes — skipped`. |
+| A volatile-metadata field differs | **Update** that field; log the old → new diff. |
+| An identity-relevant field was **empty** and the new row fills it | **Update** (fill-the-gap only) — validate the new value the same way as on first load. |
+| An identity-relevant field was **already populated** and the new row disagrees | **Reject** the incoming row and flag it for manual review; the existing record is left untouched. |
+| The incoming row's ISBN matches a different `goodreads_book_id` already on file | **Reject**, flagged as a collision (§1/§2). |
+| The row itself fails to parse as CSV | **Reject**, reason recorded. |
 
-Re-importing the same file must change nothing: every row comes back UNCHANGED (rows with conflicts are rejected again). This is what lets the job run every night safely. Example: importing `books-batch2.csv` after `books.csv` must give **200 UNCHANGED, 0 CREATED**.
+## 4. What must the report say?
 
-Rejected rows can be corrected and imported again. They go through exactly the same rules, including duplicate detection, and the new import is linked to the one that rejected them.
+Decision 7 (Abigail's model): every run reports one of three states.
 
-## 4. The morning report
+- **SUCCESS** — every row loaded with no warnings.
+- **COMPLETED WITH ISSUES** — the run finished, but some rows were
+  rejected or carry a warning. Never reported as a plain success.
+- **FAILED** — the file couldn't be read, a required column is missing, or
+  an error stopped the run partway through. This is a status label, not a
+  rollback guarantee (see **Resolved conflict**, above): rows loaded
+  before the failure may already be in `books.db`, and the report says so
+  explicitly whenever it reports FAILED.
 
-Every run writes a report a librarian can read without opening the CSV or the database. It must answer:
+On top of the status, the report keeps Kristina's original content
+requirements, which Abigail's reporting model is a superset of:
 
-1. **Did it finish?** Status:
-   - **SUCCESS:** every row loaded with no warnings.
-   - **COMPLETED WITH ISSUES:** finished, but some rows were rejected or have warnings. Never reported as a plain success.
-   - **FAILED:** the file couldn't be read, required columns are missing, an error stopped the run, or the counts don't add up. In that case nothing is saved, so the database is never left half loaded.
-2. **What came in:** import ID, file name, start and end time, total rows, and whether this exact file was already imported before.
-3. **What happened to each row:** every row has exactly one outcome, CREATED, UPDATED, UNCHANGED or REJECTED, and the report must show that **Total = Created + Updated + Unchanged + Rejected**. Repaired and warnings are counted separately, since a row can have both.
-4. **What went wrong:** a count for each kind of problem. For every rejected row and every warning, a line with:
-   - the source file and row number;
-   - the title and the original ISBN values;
-   - the field and the problem;
-   - the action taken and why;
-   - **what the librarian should do**.
-5. **What to do next:** a short "Actions required" list, such as "Fix 2 rejected rows and re-import" or "Review 19 ISBN conflicts".
-6. **Files to download:** a CSV of the rejected rows with their original data and reasons, and a CSV of every issue.
+- **Headline counts**, broken out separately: rows processed, loaded
+  clean, loaded with a warning, updated, skipped as duplicates, rejected.
+- **A breakdown by problem category** (matching §1's rows) with a count
+  for each.
+- **Per-row detail** for every non-clean row: file, row number,
+  title/`goodreads_book_id`, the original offending value, which rule it
+  hit, and exactly what the system did about it.
+- **Old → new diffs** for every updated field.
+- **Rejections and anything needing a person today** kept visibly separate
+  from routine warnings.
+- **One unambiguous bottom line at the top** — which is now just "the run
+  status," per Decision 7.
 
-Every repair and every database change also goes in an audit log: import ID, row, field, old value, new value, reason, time, automatic or manual, and source file.
+---
 
-## 5. Looking up missing ISBNs and approving corrections
+## Open items, voted
 
-The nightly load never uses the internet. Missing information is looked up **separately**, and only a person can approve what was found.
+| Item | Vote |
+|---|---|
+| Anthony's extra ISBN repairs (reverse ISBN-10 derivation, "stripped-978," multi-code reporting) | **Implement** — folded into §1 above |
+| ISBN-13 prefix (978/979) check | **Implement** — folded into §1 above |
+| Abigail's publication-year / missing-title / missing-author / language-code rules | **Skip** |
+| Abigail's atomicity guarantee | **Skip** — `FAILED` is a status label only, see **Resolved conflict** |
+| Abigail's external lookup + human-approval correction workflow (`lookup_isbns.py`, Open Library, `isbn-corrections.csv`) | **Skip** — out of scope for this assignment |
 
-1. **The lookup is its own step.** `lookup_isbns.py` is run by hand, never as part of the nightly load. It finds every book in a file that has an ISBN or year warning and searches **Open Library** (openlibrary.org) by title and first author. It goes no faster than 1 search per second, identifies itself, and saves every answer so the same search is never repeated.
-   - **Amazon is not used:** its terms forbid automated lookups.
-2. **The lookup only suggests.** One search finds the *book*, which usually has several editions with different ISBNs. So the lookup writes its suggestions to `isbn-suggestions.csv` and never decides which one is right.
-3. **A person approves.** In the suggestions file, the person fills in the approval columns, then saves the file as `isbn-corrections.csv`:
-   - `approved_isbn13`: the ISBN they checked, typed as `ISBN 978…` so Excel keeps it as text;
-   - `approved_year`;
-   - `approved_no_isbn_reason`: `ebook` or `self-published`;
-   - `approved_by`: their name.
+## Action items (not yet assigned at the meeting)
 
-   A row with no name in `approved_by` is not approved and is ignored.
-4. **Approved corrections are used the same way every time.** The nightly load reads `isbn-corrections.csv` if it exists, with no internet, and matches corrections to books by `goodreads_book_id`. The same file plus the same corrections always gives the same result.
-5. **A correction only fills a gap.** It may fill an ISBN that is missing or unusable, or a year that is missing or invalid. It **never replaces a valid value already in the file.** If it would, it isn't used, and the book gets a warning.
-6. **A correction must itself pass the rules.**
-   - An approved ISBN must be a valid ISBN-13, or a valid ISBN-10, which is converted.
-   - An approved year must be a whole number other than 0.
-   - The reason must be `ebook` or `self-published`.
-   - A correction that fails, or a book with two different corrections, isn't used, and the book gets a warning.
-7. **An approved ISBN that already belongs to another book** → REJECT and review, the same as any other ISBN (section 2, rule 3).
-8. **Every correction is traceable.** The database stores where the ISBN or year came from (for example "Open Library; approved by Abigail"). The audit log records the old and new value, and the run log lists the corrections file used.
-9. **An applied correction is a repair, not a warning**, so it doesn't stop a run from being SUCCESS.
-10. **When nothing is found**, the suggestions file says so, and the book keeps its warning until someone finds the information.
-11. **Ebooks and self-published books don't need an ISBN.**
-    - If a person has approved `approved_no_isbn_reason` as `ebook` or `self-published` for a book with no usable ISBN, the book **passes validation without one**. Its ISBN warnings are replaced by a **note**: "accepted without ISBN: ebook (approved by …)".
-    - A note is not a warning, so it doesn't stop a run from being SUCCESS. Every note still appears in the report, so nothing is hidden.
-    - The file itself says nothing about format. So a book is never treated as an ebook or self-published by guessing, only on a person's approval.
-    - The lookup only *hints* at it (for example, Open Library lists the format as ebook, the publisher is "CreateSpace" or "Independently published", or the file holds a Nook ebook code).
-12. **A broken corrections file stops the run.** If `isbn-corrections.csv` exists but can't be read, or is missing a required column, the run is FAILED and nothing is saved, the same as a broken book file.
+The working doc's action-items checklist was left blank at the end of the
+call — still open:
 
-## 6. Examples: ISBN values and what the rules do with them
+- [ ] Who writes the implementation against this agreed `rules.md`?
+- [ ] By when?
+- [ ] Who builds which test suite?
+- [ ] Confirm the group agrees with the Decision 7 / atomicity resolution above before implementation starts.
 
-29 examples, some taken from the data (the book number is given) and some made up. **Good** = a valid ISBN as written. **Repairable** = bad as written, but the rules can fix it without guessing. **Bad** = can't be used as an ISBN, or the row can't be loaded as is.
+---
 
-Unless a row says otherwise, the value is in the `isbn` (ISBN-10) column and the rest of the row is fine.
+## 5. Implementation notes for this build (Abigail's)
 
-| # | ISBN value | Where it's from | Good or bad? | What the rules say |
-|---|---|---|---|---|
-| 1 | `0439023483` | made up (correct form of book 1) | **Good** | Valid ISBN-10. Stored as ISBN-13 `9780439023481`, with the ISBN-10 kept as an alternate. |
-| 2 | `043965548X` | book 18, *Prisoner of Azkaban* | **Good** | Valid; `X` means 10. Stored as `9780439655484`. |
-| 3 | `043965548x` | made up | Repairable | REPAIR lowercase `x` → `X`, then valid as in #2. |
-| 4 | `439023483` | book 1, *The Hunger Games* | Repairable | REPAIR: restore 1 leading zero → `0439023483` (the check digit passes). Stored as `9780439023481`. |
-| 5 | `7442912` | book 69, *Insurgent* | Repairable | REPAIR: restore 3 leading zeros → `0007442912`. Stored as `9780007442911`. |
-| 6 | `12345` | made up | **Bad** | Unusable: 5 characters. Too many zeros missing to restore safely. Loaded with warning if there's no other ISBN. |
-| 7 | `1847386823` | book 3473, *Dark Visions* | **Bad** | Unusable: check digit is wrong (should be 2). Digits are **not** changed. LOAD WITH WARNING. |
-| 8 | `385535144` | book 1543, *The Racketeer* | **Bad** | Unusable: still fails after restoring the zero (expected 7). LOAD WITH WARNING. |
-| 9 | `ABC123` | made up | **Bad** | Unusable: invalid characters. LOAD WITH WARNING. |
-| 10 | `978-0-439-02348-1` in `isbn13` | made up | Repairable | REPAIR: remove hyphens → `9780439023481`, which is valid. |
-| 11 | `ISBN 978 0 439 02348 1` in `isbn13` | made up | Repairable | REPAIR: remove label and spaces → `9780439023481`, which is valid. |
-| 12 | `9780439023482` in `isbn13` | made up | **Bad** | Unusable: check digit is wrong (should be 1). Not changed. |
-| 13 | `9770439023481` in `isbn13` | made up | **Bad** | Unusable: prefix 977 isn't 978/979 (977 is used for magazines). |
-| 14 | `9791032305690` in `isbn13` | made up | **Good** | Valid ISBN-13 with the 979 prefix. Has no ISBN-10 form. |
-| 15 | `9.78043902348e+12` in `isbn13`, `isbn` = `439023483` | book 1 | Repairable | REPAIR: ISBN-13 rebuilt from the ISBN-10 as `9780439023481`, which matches the rounded number. |
-| 16 | `9.78067978327e+12` in `isbn13`, `isbn` = `679783261` | book 10 | Repairable | REPAIR: rebuilt from the ISBN-10 as `9780679783268`. Recalculating from the visible digits would have given a wrong ISBN, because the 12th digit was rounded up. |
-| 17 | `9.78043902348e+12` in `isbn13`, `isbn` empty | made up | **Bad** | Unusable: digits lost, nothing to check against. LOAD WITH WARNING, no ISBN. |
-| 18 | `2.94001623192e+12` in `isbn13`, `isbn` empty | book 1165, *Wait for You* | **Bad** | Not an ISBN (Nook ebook code). LOAD WITH WARNING, no ISBN. |
-| 19 | `97893806587.0` in `isbn13` | book 1443 | **Bad** | Unusable: only 11 digits. |
-| 20 | `isbn` = `446612707`, `isbn13` = `9.78055381395e+12` | book 622 | **Bad** | The two columns point to different publications. LOAD WITH WARNING + review; no ISBN stored. |
-| 21 | both empty | book 106, *Bossypants* | **Bad** | LOAD WITH WARNING: no ISBN. Identified by Goodreads ID. |
-| 22 | `439023483` again, same `goodreads_book_id`, nothing else changed | `books-batch2.csv` | Repairable | UNCHANGED. No new record. |
-| 23 | `9780439023481` on a **different** `goodreads_book_id` | made up | **Bad** | REJECT + review: this ISBN already belongs to another book. |
-| 24 | `0439023483`, same `goodreads_book_id`, but the title has changed | made up | **Bad** | REJECT + review: the existing record is not overwritten. |
-| 25 | both empty, plus an approved correction `ISBN 9780316175869` | book 106, *Bossypants* | Repairable | REPAIR from the approved correction: ISBN-13 `9780316175869`, source recorded. No warning. |
-| 26 | both empty, plus an approved reason `ebook` | made up | **Good** (no ISBN needed) | Passes without an ISBN. Shown as a note "accepted without ISBN: ebook", not a warning. |
-| 27 | `0439023483` (valid), plus an approved correction with a different ISBN | made up | **Good** | The valid ISBN is kept. The correction isn't used, and the book gets a warning. |
-| 28 | both empty, plus an approved correction `9.78032E+12` (Excel turned it into a number) | made up | **Bad** | The correction fails the ISBN rules and isn't used. The book keeps its warning, and a warning explains the correction. |
-| 29 | both empty, plus a suggested ISBN but no name in `approved_by` | made up | **Bad** | Not approved, so ignored. The book keeps its "no usable ISBN" warning. |
+The agreed rules above are copied unchanged. This section records how this
+build fills the gaps and resolves the wording problems found when the rules
+were compared with the code (approved 2026-11-07). Each one is marked so the
+group can confirm or change it.
+
+| # | Gap or unclear wording | What this build does |
+|---|---|---|
+| 1 | `isbn` and `isbn13` are both valid but are different books (not covered in §1) | **Load with a warning** (`isbn-mismatch`) on both fields; both are nulled. Fits Decision 2: "load, warn, null the field." |
+| 2 | Scientific-notation `isbn13` plus a valid `isbn` | Follows §1 as written: `isbn13` is **always** re-derived from `isbn` (no cross-check against the rounded value). |
+| 3 | "Missing counterpart" says the `isbn13` is in scientific notation *and* valid, which can't both be true | Read as: if `isbn13` is a valid **978** ISBN-13 and `isbn` is empty or unusable, derive `isbn` from it. 979 ISBN-13s have no ISBN-10 and are left alone. |
+| 4 | Valid `isbn` with an empty `isbn13` (not covered) | Derive `isbn13` from `isbn` (978 + first 9 digits + new check digit). |
+| 5 | Reason codes were only partly named | Full list below; the six names used in the agreed documents are kept exactly. |
+| 6 | Blank or non-number `goodreads_book_id` (the rules assume it never happens) | **Reject** (`missing-goodreads-id` / `invalid-goodreads-id`) so the run doesn't crash. **Gap for the group.** |
+| 7 | `original_title` is in neither field list of §3 | Treated as **volatile metadata** (updated freely), because only listed fields are frozen. |
+| 8 | Re-running a file could pile up duplicate rows in the `warnings` table | A book's warnings are saved when it is first loaded and **replaced** when it is updated; a skipped duplicate adds none. |
+| 9 | Atomicity (Open item: skip) | Each row is saved as it is processed; a run that stops partway keeps the rows before the stop. |
+| 10 | Abigail's earlier extras not in the agreed rules | Removed: `--reprocess-of`, the "file already imported" note, the "possible duplicate" warning, and the extra tables (`runs`, `audit_log`, `review_items`, `rejected_rows`). Change history and rejections are in `ingestion-log.json`. |
+| 11 | When a column is unusable but the other column is valid (rules 3 and 4) | The unusable value still gets its §1 **warning** (raw value kept), and the field is then filled from the valid column (recorded as a repair). The one exception is lost precision, which §1 calls a repair, not a warning. |
+| 12 | A blank value arrives for an identity-relevant field that is already filled (not covered in §3) | Not a conflict: the stored value is kept. Missing information never erases existing information. |
+| 13 | A title that differs only by capitals, punctuation or spaces | Treated as the same title; the stored title is kept unchanged. |
+| 14 | Text fields (title, authors, year, language, ...) | Stored exactly as given (blank becomes empty/NULL), with no validation, per the "skip" vote. |
+| 15 | An `isbn` that lost its leading zero **and** had its 978 stripped (e.g. `812971060`): zero-padding fails the checksum, and the stripped-978 rule only covers 10-digit values | **Not repaired**: loaded with `bad-checksum`. Combining the two repairs isn't in the agreed rules. 13 rows (12 in `books.csv`, 1 in `books-batch2.csv`). **Gap for the group.** |
+| 16 | `rules-comparison.md` is linked above but isn't in this repository | Links left as written; the decisions it supports are all summarized in section 0. |
+
+### Reason codes
+
+A field with more than one problem lists every reason, comma-separated
+(for example `lost-precision,bad-prefix`).
+
+| Code | Kind | Meaning |
+|---|---|---|
+| `structural-parse-error` | Reject | The CSV row has the wrong number of fields or broken quoting. |
+| `isbn-collision` | Reject | A valid ISBN already belongs to a different `goodreads_book_id`. |
+| `identity-field-conflict` | Reject | An identity-relevant field already on file has a different value. |
+| `missing-goodreads-id` | Reject | `goodreads_book_id` is blank (implementation note 6). |
+| `invalid-goodreads-id` | Reject | `goodreads_book_id` is not a positive whole number (implementation note 6). |
+| `no-usable-isbn` | Warning | Neither `isbn` nor `isbn13` could be stored. |
+| `bad-checksum` | Warning | Right length and characters, wrong check digit. |
+| `bad-prefix` | Warning | A 13-digit value that doesn't start with 978 or 979. |
+| `bad-length` | Warning | Wrong length, and not a leading-zero case. |
+| `bad-characters` | Warning | A letter or symbol where only digits (or a final `X` in an ISBN-10) belong. |
+| `unparseable` | Warning | No digits at all (letters only, symbols, garbage). |
+| `lost-precision` | Warning | `isbn13` was written in scientific notation and its last digits are gone. |
+| `isbn-mismatch` | Warning | `isbn` and `isbn13` are both valid but are different books (implementation note 1). |
+| `formatting-removed` | Repair | Hyphens, spaces or an "ISBN" label removed; a final `x` uppercased. |
+| `float-format-removed` | Repair | A full 13-digit number written like `9780439023481.0` was rewritten as plain digits. |
+| `leading-zeros-restored` | Repair | 1–3 dropped leading zeros put back; the check digit confirms it. |
+| `stripped-978-restored` | Repair | The ISBN-10 check digit was recomputed from the ISBN-13 that does check out. |
+| `isbn13-moved-from-isbn` | Repair | A valid ISBN-13 found in the `isbn` column was moved to `isbn13`. |
+| `isbn13-derived-from-isbn` | Repair | `isbn13` was built from the valid `isbn`. |
+| `isbn-derived-from-isbn13` | Repair | `isbn` was built from a valid 978 `isbn13`. |

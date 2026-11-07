@@ -31,35 +31,40 @@
   #status.error { color: var(--bad); font-weight: 600; }
   .run { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
          padding: 18px 20px; margin-bottom: 18px; }
+  details.run > summary { cursor: pointer; list-style: none; }
+  details.run > summary::-webkit-details-marker { display: none; }
+  details.run > summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; border-radius: 6px; }
   .run-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
   .run-head h2 { font-size: 1.15rem; margin: 0; word-break: break-all; }
   .meta { color: var(--muted); font-size: .9rem; margin: 4px 0 14px; }
+  .expand { color: var(--accent); font-weight: 600; }
   .pill { font-size: .8rem; font-weight: 700; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
   .SUCCESS { background: var(--ok-bg); color: var(--ok); }
   .WITH_ISSUES { background: var(--warn-bg); color: var(--warn); }
   .FAILED { background: var(--bad-bg); color: var(--bad); }
+  .OLD { background: var(--row); color: var(--muted); }
   .counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 12px; }
   .count { background: var(--row); border-radius: 8px; padding: 8px 10px; }
   .count b { display: block; font-size: 1.3rem; font-variant-numeric: tabular-nums; }
   .count span { color: var(--muted); font-size: .82rem; }
   .note { margin: 6px 0; font-size: .92rem; }
   .note.bad { color: var(--bad); font-weight: 600; }
+  .run-body { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 4px; }
   h3 { font-size: 1rem; margin: 16px 0 6px; }
-  ul.actions { margin: 4px 0; padding-left: 20px; }
-  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; max-height: 70vh; }
   table { border-collapse: collapse; width: 100%; font-size: .86rem; }
   th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   th { background: var(--row); position: sticky; top: 0; }
   td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   code { font-size: .85em; }
-  details summary { cursor: pointer; font-weight: 600; margin: 16px 0 6px; }
+  details.list > summary { cursor: pointer; font-weight: 600; margin: 12px 0 6px; }
   .muted { color: var(--muted); }
 </style>
 </head>
 <body>
 <main>
   <h1>Book Ingestion Report</h1>
-  <p class="lead">Shows every run recorded in <code>ingestion-log.json</code>, newest first. The file is read in your browser only; nothing is uploaded.</p>
+  <p class="lead">Shows every run recorded in <code>ingestion-log.json</code>, newest first, under the group's agreed rules (<code>rules.md</code>). The file is read in your browser only; nothing is uploaded.</p>
   <label class="open" for="file" tabindex="0" role="button">Open ingestion-log.json</label>
   <input type="file" id="file" accept=".json,application/json">
   <p id="status">No log opened yet.</p>
@@ -68,18 +73,19 @@
 <script>
 (function () {
   "use strict";
+  // Headline counts (rules.md section 4).
   var COUNT_LABELS = [
-    ["read", "Rows read"], ["loaded", "Loaded (new)"], ["updated", "Updated"],
-    ["skipped_existing", "Skipped: already exist"], ["rejected", "Rejected"],
-    ["repaired", "Repaired"], ["rows_with_warnings", "With warnings"],
-    ["corrected", "Fixed by approved correction"], ["accepted_without_isbn", "Accepted without ISBN"]
+    ["rows_read", "Rows processed"], ["loaded_clean", "Loaded clean"], ["loaded_with_warning", "Loaded with a warning"],
+    ["updated", "Updated"], ["skipped", "Skipped as duplicates"], ["rejected", "Rejected"],
+    ["rows_with_warning", "Rows with a warning"], ["rows_repaired", "Rows repaired"]
   ];
-  var ROW_COLUMNS = [
-    ["row_number", "Row"], ["goodreads_book_id", "Goodreads ID"], ["title", "Title"],
-    ["original_isbn", "isbn"], ["original_isbn13", "isbn13"], ["field", "Field"],
-    ["problem", "Problem"], ["detail", "Detail"], ["action", "Action"], ["why", "Why"],
-    ["what_to_do", "What to do"]
-  ];
+  var BOOK = [["source_file", "File"], ["row_number", "Row"], ["goodreads_book_id", "Goodreads ID"], ["title", "Title"]];
+  var TABLES = {
+    needs_attention: BOOK.concat([["reason", "Rule"], ["detail", "Detail"], ["action", "What the system did"]]),
+    warnings: BOOK.concat([["field", "Field"], ["raw_value", "Original value"], ["reason", "Rule(s)"], ["action", "What the system did"]]),
+    updates: BOOK.concat([["field", "Field"], ["old", "Old"], ["new", "New"]]),
+    repairs: BOOK.concat([["field", "Field"], ["original", "Original value"], ["new", "Repaired value"], ["reason", "Rule"]])
+  };
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -91,91 +97,93 @@
   }
   function show(value) { return value === null || value === undefined || String(value).trim() === "" ? "—" : String(value); }
   function when(iso) { return iso ? iso.replace("T", " ") : "—"; }
+  function num(n) { return typeof n === "number" ? n.toLocaleString() : "—"; }
 
-  function rowsTable(rows) {
-    var head = el("tr", {}, ROW_COLUMNS.map(function (c) { return el("th", { text: c[1] }); }));
+  function table(columns, rows) {
+    var head = el("tr", {}, columns.map(function (c) { return el("th", { text: c[1] }); }));
     var body = rows.map(function (r) {
-      return el("tr", {}, ROW_COLUMNS.map(function (c) {
+      return el("tr", {}, columns.map(function (c) {
         return el("td", { text: show(r[c[0]]), "class": c[0] === "row_number" ? "num" : "" });
       }));
     });
     return el("div", { "class": "table-wrap" }, [el("table", {}, [el("thead", {}, [head]), el("tbody", {}, body)])]);
   }
 
-  function renderRun(run) {
-    var status = run.status || "UNKNOWN";
-    var cls = status === "SUCCESS" ? "SUCCESS" : status === "FAILED" ? "FAILED" : "WITH_ISSUES";
-    var counts = run.counts || {};
-    var card = el("section", { "class": "run" });
-
-    card.appendChild(el("div", { "class": "run-head" }, [
-      el("h2", { text: show(run.file) }),
-      el("span", { "class": "pill " + cls, text: status })
-    ]));
-    card.appendChild(el("div", { "class": "meta", text:
-      "Run " + show(run.run_id) + " · started " + when(run.started_at) + " · finished " + when(run.finished_at) }));
-
-    card.appendChild(el("div", { "class": "counts" }, COUNT_LABELS.map(function (c) {
-      var n = counts[c[0]];
-      return el("div", { "class": "count" }, [
-        el("b", { text: typeof n === "number" ? n.toLocaleString() : "—" }),
-        el("span", { text: c[1] })
-      ]);
-    })));
-
-    if (run.error) card.appendChild(el("p", { "class": "note bad", text: "Error: " + run.error + ". Nothing from this run was saved." }));
-    if (run.counts_add_up === true) {
-      card.appendChild(el("p", { "class": "note", text: "Check: " + counts.read + " read = " + counts.loaded + " loaded + " +
-        counts.updated + " updated + " + counts.skipped_existing + " skipped + " + counts.rejected + " rejected. Adds up." }));
-    } else if (run.counts_add_up === false) {
-      card.appendChild(el("p", { "class": "note bad", text: "Counts do not add up for this run." }));
-    }
-    if (run.already_imported_as) card.appendChild(el("p", { "class": "note", text:
-      "This exact file was already imported as run " + run.already_imported_as + "." }));
-    if (run.reprocess_of) card.appendChild(el("p", { "class": "note", text:
-      "Re-processes corrected rows rejected by run " + run.reprocess_of + "." }));
-    var corr = run.corrections;
-    if (corr && corr.file) {
-      var unusable = corr.unusable || [];
-      card.appendChild(el("p", { "class": unusable.length ? "note bad" : "note", text:
-        "Approved corrections read from " + corr.file + ": " + corr.approved + " usable" +
-        (unusable.length ? ", " + unusable.length + " not usable (listed below)." : ".") }));
-      if (unusable.length) {
-        card.appendChild(el("div", { "class": "table-wrap" }, [el("table", {}, [
-          el("thead", {}, [el("tr", {}, ["Row in corrections file", "Goodreads ID", "Problem"].map(function (h) { return el("th", { text: h }); }))]),
-          el("tbody", {}, unusable.map(function (u) {
-            return el("tr", {}, [el("td", { "class": "num", text: show(u.row_number) }), el("td", { text: show(u.goodreads_book_id) }), el("td", { text: show(u.problem) })]);
-          }))
-        ])]));
-      }
-    }
-
-    var actions = run.actions_required || [];
-    card.appendChild(el("h3", { text: "Actions required" }));
-    card.appendChild(actions.length
-      ? el("ul", { "class": "actions" }, actions.map(function (a) { return el("li", { text: a }); }))
-      : el("p", { "class": "muted", text: "None." }));
-
-    var notLoaded = run.not_loaded || [];
-    card.appendChild(el("h3", { text: "Rows not loaded (" + notLoaded.length.toLocaleString() + ")" }));
-    card.appendChild(notLoaded.length ? rowsTable(notLoaded) : el("p", { "class": "muted", text: status === "FAILED"
-      ? "The run failed, so no rows were loaded (see the error above)."
-      : "Every row was loaded or already existed." }));
-
-    [lazyList("Rows loaded with warnings", run.warnings || []),
-     lazyList("Notes: accepted without ISBN (not warnings)", run.notes || [])
-    ].forEach(function (list) { if (list) card.appendChild(list); });
-    return card;
-  }
-
   // A collapsed list whose table is built on first open: logs can hold thousands of rows.
-  function lazyList(label, rows) {
-    if (!rows.length) return null;
-    var details = el("details", {}, [el("summary", { text: label + " (" + rows.length.toLocaleString() + ")" })]);
+  function lazyList(label, columns, rows) {
+    if (!rows.length) return el("p", { "class": "muted", text: label + ": none." });
+    var details = el("details", { "class": "list" }, [el("summary", { text: label + " (" + rows.length.toLocaleString() + ")" })]);
     details.addEventListener("toggle", function () {
-      if (details.open && !details.dataset.built) { details.appendChild(rowsTable(rows)); details.dataset.built = "1"; }
+      if (details.open && !details.dataset.built) { details.appendChild(table(columns, rows)); details.dataset.built = "1"; }
     });
     return details;
+  }
+
+  // Entries written under the agreed rules carry a "rules" field; older ones don't.
+  function isAgreedRules(run) { return Boolean(run.rules); }
+
+  function renderRun(run) {
+    var status = run.status;
+    var cls = status === "SUCCESS" ? "SUCCESS" : status === "FAILED" ? "FAILED" : "WITH_ISSUES";
+    var counts = run.counts || {};
+    var agreed = isAgreedRules(run);
+    var card = el(agreed ? "details" : "section", { "class": "run" });
+    var head = el(agreed ? "summary" : "div", {}, [
+      el("div", { "class": "run-head" }, [
+        el("h2", { text: show(run.file) }),
+        status ? el("span", { "class": "pill " + cls, text: status }) : null,
+        agreed ? null : el("span", { "class": "pill OLD", text: "earlier rules" })
+      ]),
+      el("div", { "class": "meta" }, [
+        document.createTextNode("Run " + show(run.run_id) + " · started " + when(run.started_at) + " · finished " + when(run.finished_at)),
+        agreed ? document.createTextNode(" · ") : null,
+        agreed ? el("span", { "class": "expand", text: "Show row details" }) : null
+      ])
+    ]);
+    card.appendChild(head);
+    if (agreed) card.addEventListener("toggle", function (event) {
+      if (event.target !== card) return;
+      card.querySelector(".expand").textContent = card.open ? "Hide row details" : "Show row details";
+    });
+
+    if (agreed) {
+      head.appendChild(el("div", { "class": "counts" }, COUNT_LABELS.map(function (c) {
+        return el("div", { "class": "count" }, [el("b", { text: num(counts[c[0]]) }), el("span", { text: c[1] })]);
+      })));
+    } else {
+      head.appendChild(el("p", { "class": "note muted", text: "Recorded under Abigail's earlier rules, before the group's agreed rules. Counts: " +
+        Object.keys(counts).map(function (k) { return k + " " + num(counts[k]); }).join(", ") + "." }));
+    }
+    if (run.status_note) head.appendChild(el("p", { "class": "note bad", text: run.status_note }));
+    if (run.error) head.appendChild(el("p", { "class": "note bad", text: "Error: " + run.error }));
+    if (!agreed) return card;
+
+    var body = el("div", { "class": "run-body" });
+    card.appendChild(body);
+    if (run.counts_add_up === true) {
+      body.appendChild(el("p", { "class": "note", text: "Check: " + num(counts.rows_read) + " processed = " + num(counts.loaded) +
+        " loaded + " + num(counts.updated) + " updated + " + num(counts.skipped) + " skipped + " + num(counts.rejected) + " rejected. Adds up." }));
+    } else if (run.counts_add_up === false) {
+      body.appendChild(el("p", { "class": "note bad", text: "Counts do not add up for this run." }));
+    }
+
+    var attention = run.needs_attention || [];
+    body.appendChild(el("h3", { text: "Rejected rows: need a person (" + attention.length.toLocaleString() + ")" }));
+    body.appendChild(attention.length ? table(TABLES.needs_attention, attention)
+      : el("p", { "class": "muted", text: "Nothing was rejected." }));
+
+    var problems = run.problem_counts || {};
+    var codes = Object.keys(problems);
+    body.appendChild(el("h3", { text: "Breakdown by rule" }));
+    body.appendChild(codes.length ? table([["code", "Rule (see rules.md section 5)"], ["count", "Times"]], codes.map(function (k) {
+      return { code: k, count: problems[k].toLocaleString() };
+    })) : el("p", { "class": "muted", text: "No problems or repairs." }));
+
+    body.appendChild(el("h3", { text: "Routine details" }));
+    body.appendChild(lazyList("Warnings (row loaded, field stored empty)", TABLES.warnings, run.warnings || []));
+    body.appendChild(lazyList("Updated fields, old → new", TABLES.updates, run.updates || []));
+    body.appendChild(lazyList("Repairs", TABLES.repairs, run.repairs || []));
+    return card;
   }
 
   function render(runs, fileName) {
@@ -187,7 +195,7 @@
       return String(b.run.started_at || "").localeCompare(String(a.run.started_at || "")) || b.i - a.i;
     }).map(function (x) { return x.run; });
     statusLine.className = "";
-    statusLine.textContent = fileName + ": " + runs.length + " run" + (runs.length === 1 ? "" : "s") + ", newest first.";
+    statusLine.textContent = fileName + ": " + runs.length + " run" + (runs.length === 1 ? "" : "s") + ", newest first. Click a run to see its row details.";
     ordered.forEach(function (run) { container.appendChild(renderRun(run)); });
   }
 

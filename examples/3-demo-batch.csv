@@ -1,7 +1,0 @@
-book_id,goodreads_book_id,best_book_id,work_id,books_count,isbn,isbn13,authors,original_publication_year,original_title,title,language_code,average_rating,ratings_count,work_ratings_count,work_text_reviews_count,ratings_1,ratings_2,ratings_3,ratings_4,ratings_5,image_url,small_image_url
-10001,90000001,,90000001,,,979-10-323-0569-0,Demo Author,2027,,A Made-Up Future Book,eng,,,,,,,,,,,
-10002,90000002,,,,0-439-02348-3,,Unknown,2017,,   ,,,,,,,,,,,,
-10003,90000003,,,,439023483,,Someone Else,2019,,Not The Hunger Games,,,,,,,,,,,,
-1,2767052,2767052,2792775,272,439023483,9.78043902348e+12,Suzanne Collins,2008.0,The Hunger Games,The Hunger Games: Special Edition,eng,4.34,4780653,4942365,155254,66715,127936,560092,1481305,2706317,https://images.gr-assets.com/books/1447303603m/2767052.jpg,https://images.gr-assets.com/books/1447303603s/2767052.jpg
-2,3,3,4640799,491,439554934,9.78043955493e+12,"J.K. Rowling, Mary GrandPré",1997.0,Harry Potter and the Philosopher's Stone,"Harry Potter and the Sorcerer's Stone (Harry Potter, #1)",eng,4.44,4602500,4800065,75867,75504,101676,455024,1156318,3011543,https://images.gr-assets.com/books/1474154022m/3.jpg,https://images.gr-assets.com/books/1474154022s/3.jpg
-106,9418327,9418327,14302659,48,,,Tina Fey,2011.0,Bossypants,Bossypants,eng,3.94,506250,609260,35142,14842,31761,129390,230080,203187,https://images.gr-assets.com/books/1481509554m/9418327.jpg,https://images.gr-assets.com/books/1481509554s/9418327.jpg
